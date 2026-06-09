@@ -14,7 +14,7 @@ int main()
 {
 	// ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
 	// a * b を共有する3つの式で、スカラー実装、手書きSIMD、通常式API、
-	// コンパイル済みプランの実行時間と誤差を比較します。
+	// それぞれの実行時間と誤差を比較します。
 	const simdbench::FusedExpressionBenchmarkResult fused{
 	    simdbench::runFusedExpressionBenchmark(ELEMENT_COUNT, REPEAT_COUNT)};
 
@@ -30,12 +30,10 @@ int main()
 	std::cout << "[共有部分式 a * b + (c,d,e) の比較]\n";
 	std::cout << "SIMDなしの通常ループ      : " << fused.scalarMs << " ms\n";
 	std::cout << "手書きSIMD                 : " << fused.manualSimdMs << " ms\n";
-	std::cout << "式APIを毎回コンパイル      : " << fused.normalExpressionMs << " ms\n";
-	std::cout << "プラン作成のみ             : " << fused.compileMs << " ms\n";
-	std::cout << "コンパイル済みプランの実行 : " << fused.scheduledPlanMs << " ms\n";
+	std::cout << "式API                      : " << fused.normalExpressionMs << " ms\n";
 	std::cout << "数値誤差(SIMDなし)         : " << fused.scalarXError << "\n";
 	std::cout << "数値誤差(式API)            : " << fused.expressionXError << "\n";
-	std::cout << "数値誤差(コンパイル済み)   : " << fused.planXError << "\n\n";
+	std::cout << "\n";
 
 	std::cout << "[3成分の位置・速度更新の比較]\n";
 	std::cout << "SIMDなしの通常ループ       : " << componentUpdate.scalarMs << " ms\n";

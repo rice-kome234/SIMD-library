@@ -18,16 +18,16 @@ struct DebugAccess {
 namespace rice::simd::debug
 {
 /*!
- *   @brief コンパイル済みプランの診断情報を指定ストリームへ出力
- *   @param[in] plan 表示するコンパイル済みプラン
+ *   @brief 内部実行手順の診断情報を指定ストリームへ出力
+ *   @param[in] plan 表示する内部実行手順
  *   @param[out] os 出力先ストリーム
  *   @details 開発やベンチマーク確認用の補助APIです。通常利用では不要です。
  */
-inline void printStages(const ScheduledPlan &plan, std::ostream &os)
+inline void printStages(const internal::ScheduledPlan &plan, std::ostream &os)
 {
 	const internal::ScheduledPlanData &data{internal::DebugAccess::data(plan)};
 
-	os << "ScheduledPlan\n";
+	os << "InternalPlan\n";
 	os << "  stage count       : " << plan.stageCount() << "\n";
 	os << "  instruction count : " << plan.instructionCount() << "\n";
 	os << "  max register count: " << plan.maxRegisterCount() << "\n";
@@ -39,8 +39,8 @@ inline void printStages(const ScheduledPlan &plan, std::ostream &os)
 }
 
 /*!
- *   @brief コンパイル済みプランの診断情報を標準出力へ出力
- *   @param[in] plan 表示するコンパイル済みプラン
+ *   @brief 内部実行手順の診断情報を標準出力へ出力
+ *   @param[in] plan 表示する内部実行手順
  */
-inline void printStages(const ScheduledPlan &plan) { printStages(plan, std::cout); }
+inline void printStages(const internal::ScheduledPlan &plan) { printStages(plan, std::cout); }
 }

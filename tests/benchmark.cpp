@@ -19,7 +19,6 @@ namespace
 {
 using rice::simd::Array;
 using rice::simd::Engine;
-using rice::simd::ScheduledPlan;
 namespace low_level = rice::simd::low_level;
 
 #if defined(__GNUC__) && !defined(__clang__)
@@ -48,8 +47,7 @@ private:
 
 struct ThreeComponentArrays {
 	ThreeComponentArrays(Engine &engine, std::size_t elementCount)
-	    : x{engine.createArray(elementCount)}, y{engine.createArray(elementCount)},
-	      z{engine.createArray(elementCount)}
+	    : x{engine, elementCount}, y{engine, elementCount}, z{engine, elementCount}
 	{
 	}
 
@@ -241,11 +239,11 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 {
 	Engine engine{};
 
-	Array a{engine.createArray(elementCount)};
-	Array b{engine.createArray(elementCount)};
-	Array c{engine.createArray(elementCount)};
-	Array d{engine.createArray(elementCount)};
-	Array e{engine.createArray(elementCount)};
+	Array a{engine, elementCount};
+	Array b{engine, elementCount};
+	Array c{engine, elementCount};
+	Array d{engine, elementCount};
+	Array e{engine, elementCount};
 
 	fillRandom(a, -10.0f, 10.0f, 1);
 	fillRandom(b, -10.0f, 10.0f, 2);
@@ -281,9 +279,9 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 
 	const double scalarMs{scalarTimer.elapsedMilliseconds()};
 
-	Array manualX{engine.createArray(elementCount)};
-	Array manualY{engine.createArray(elementCount)};
-	Array manualZ{engine.createArray(elementCount)};
+	Array manualX{engine, elementCount};
+	Array manualY{engine, elementCount};
+	Array manualZ{engine, elementCount};
 
 	Timer manualTimer{};
 
@@ -293,9 +291,9 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 
 	const double manualMs{manualTimer.elapsedMilliseconds()};
 
-	Array expressionX{engine.createArray(elementCount)};
-	Array expressionY{engine.createArray(elementCount)};
-	Array expressionZ{engine.createArray(elementCount)};
+	Array expressionX{engine};
+	Array expressionY{engine};
+	Array expressionZ{engine};
 
 	Timer expressionTimer{};
 
@@ -308,34 +306,11 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 
 	const double expressionMs{expressionTimer.elapsedMilliseconds()};
 
-	Array planX{engine.createArray(elementCount)};
-	Array planY{engine.createArray(elementCount)};
-	Array planZ{engine.createArray(elementCount)};
-
-	Timer compileTimer{};
-
-	planX = a * b + c;
-	planY = a * b + d;
-	planZ = a * b + e;
-	ScheduledPlan fusionPlan{engine.compile()};
-
-	const double compileMs{compileTimer.elapsedMilliseconds()};
-
-	Timer planTimer{};
-
-	for (int i{}; i < repeatCount; ++i) {
-		fusionPlan.execute();
-	}
-
-	const double planMs{planTimer.elapsedMilliseconds()};
-
 	std::vector<float> manualXS{};
 	std::vector<float> expressionXS{};
-	std::vector<float> planXS{};
 
 	manualX.copyTo(manualXS);
 	expressionX.copyTo(expressionXS);
-	planX.copyTo(planXS);
 
 	FusedExpressionBenchmarkResult result{};
 	result.elementCount = elementCount;
@@ -343,11 +318,8 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	result.scalarMs = scalarMs;
 	result.manualSimdMs = manualMs;
 	result.normalExpressionMs = expressionMs;
-	result.compileMs = compileMs;
-	result.scheduledPlanMs = planMs;
 	result.scalarXError = maxAbsError(manualXS, scalarX);
 	result.expressionXError = maxAbsError(manualXS, expressionXS);
-	result.planXError = maxAbsError(manualXS, planXS);
 	return result;
 }
 

@@ -6,13 +6,15 @@
 #include <cstdint>
 #include <immintrin.h>
 #include <initializer_list>
+#include <limits>
+#include <memory>
 #include <vector>
 
 namespace rice::simd::internal
 {
 inline constexpr std::size_t SIMD_WIDTH{8};
 inline constexpr int MAX_REGISTERS{32};
-inline constexpr std::size_t INVALID_NODE{static_cast<std::size_t>(-1)};
+inline constexpr std::size_t INVALID_NODE{std::numeric_limits<std::size_t>::max()};
 
 class FloatArray
 {
@@ -375,7 +377,7 @@ public:
 	int registerCount() const noexcept;
 
 private:
-	friend class ::rice::simd::ScheduledPlan;
+	friend class ScheduledPlan;
 	friend struct Compiler;
 
 	void executeBlock(std::size_t blockIndex, __m256 *regs) const noexcept;
@@ -388,6 +390,29 @@ private:
 struct ScheduledPlanData {
 	std::size_t blockCount{};
 	std::vector<FusionPlan> stages;
+};
+
+class ScheduledPlan
+{
+public:
+	ScheduledPlan();
+	~ScheduledPlan() noexcept;
+
+	ScheduledPlan(const ScheduledPlan &) noexcept = default;
+	ScheduledPlan &operator=(const ScheduledPlan &) noexcept = default;
+	ScheduledPlan(ScheduledPlan &&) noexcept = default;
+	ScheduledPlan &operator=(ScheduledPlan &&) noexcept = default;
+
+	void execute() const noexcept;
+	std::size_t stageCount() const noexcept;
+	std::size_t instructionCount() const noexcept;
+	int maxRegisterCount() const noexcept;
+
+private:
+	friend struct Compiler;
+	friend struct DebugAccess;
+
+	std::shared_ptr<ScheduledPlanData> impl_;
 };
 
 struct EngineData {

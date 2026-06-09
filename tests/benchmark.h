@@ -8,7 +8,7 @@ namespace simdbench
  *   @brief 式融合ベンチマークの結果
  *   @details
  *   `x = a * b + c`、`y = a * b + d`、`z = a * b + e` という3つの式を、
- *   非SIMDスカラー実装、手書きSIMD実装、通常式API、コンパイル済みプランで比較します。
+ *   非SIMDスカラー実装、手書きSIMD実装、通常式APIで比較します。
  */
 struct FusedExpressionBenchmarkResult {
 	std::size_t elementCount{};
@@ -17,12 +17,9 @@ struct FusedExpressionBenchmarkResult {
 	double scalarMs{};
 	double manualSimdMs{};
 	double normalExpressionMs{};
-	double compileMs{};
-	double scheduledPlanMs{};
 
 	float scalarXError{};
 	float expressionXError{};
-	float planXError{};
 };
 
 /*!

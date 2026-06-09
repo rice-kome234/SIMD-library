@@ -5,10 +5,10 @@
 ## 特徴
 
 - `rice::simd::Array` が配列の寿命を所有します。
-- `rice::simd::Engine` が配列の作成、式ノード生成、コンパイル、実行を担当します。
+- `rice::simd::Engine` が式ノード生成と実行を担当します。
 - `x = a * b + c;` のように、計算式をそのまま書けます。
-- 同じ式を何度も実行する場合は、`ScheduledPlan` として事前コンパイルできます。
-- 配列サイズの不一致は `compile()` または `execute()` のタイミングで検出します。
+- 出力配列が空の場合は、式に含まれる入力配列のサイズへ自動で合わせます。
+- 配列サイズの不一致は `execute()` のタイミングで検出します。
 
 ## ビルド
 
@@ -73,12 +73,11 @@ int main()
 {
 	rice::simd::Engine engine{};
 
-	rice::simd::Array a{engine.createArray({1.0f, 2.0f, 3.0f, 4.0f})};
-	rice::simd::Array b{engine.createArray(a.size(), 2.0f)};
-	rice::simd::Array c{engine.createArray({10.0f, 20.0f, 30.0f, 40.0f})};
-	rice::simd::Array out{engine.createArray()};
+	rice::simd::Array a{engine, {1.0f, 2.0f, 3.0f, 4.0f}};
+	rice::simd::Array b{engine, a.size(), 2.0f};
+	rice::simd::Array c{engine, {10.0f, 20.0f, 30.0f, 40.0f}};
+	rice::simd::Array out{engine};
 
-	out.resizeLike(a);
 	out = a * b + c;
 	engine.execute();
 
@@ -90,7 +89,7 @@ int main()
 ## 値の入れ方
 
 ```cpp
-rice::simd::Array a{engine.createArray({1.0f, 2.0f, 3.0f, 4.0f})};
+rice::simd::Array a{engine, {1.0f, 2.0f, 3.0f, 4.0f}};
 
 a.fill(1.0f);
 a.assign(4, 2.0f);
@@ -102,9 +101,10 @@ std::vector<float> result{};
 a.copyTo(result);
 ```
 
-## コンパイル済みプラン
+## 計算の実行
 
-同じ式を何度も実行する場合は、代入式を一度積んでから `compile()` します。
+代入式を書いた時点では、計算はまだ実行されません。
+複数の式を積んでから `engine.execute()` を呼ぶと、まとめて処理されます。
 
 ```cpp
 // a, b, c, d, e, x, y, z は同じEngineから作ったArrayです。
@@ -113,13 +113,11 @@ x = a * b + c;
 y = a * b + d;
 z = a * b + e;
 
-rice::simd::ScheduledPlan plan{engine.compile()};
-
-plan.execute();
-plan.execute();
+engine.execute();
 ```
 
-`compile()` は、それまでに `Array::operator=` で積まれた代入をプラン化し、成功後に内部キューと一時式ノードを空にします。`ScheduledPlan` は配列の内部データを参照するため、プラン実行中は参照先の `Array` を破棄したり `resize()` したりしないでください。
+`x`、`y`、`z` が空の配列だった場合は、入力配列の要素数に合わせて自動で確保されます。
+すでにサイズを持っている出力配列は、そのサイズが入力配列と一致しているかを実行時に確認します。
 
 ## ベンチマーク
 
@@ -130,5 +128,5 @@ plan.execute();
 ctest --test-dir build-cmake -C Release --output-on-failure -V
 ```
 
-ベンチマーク内では手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではありません。通常の利用側は `simd.h` の `Array`、`Engine`、`ScheduledPlan` だけを知っていれば使えます。
+ベンチマーク内では手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではありません。通常の利用側は `simd.h` の `Array`、`Engine`、式演算子だけを知っていれば使えます。
 

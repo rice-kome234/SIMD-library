@@ -169,6 +169,18 @@ Array::Array(Engine &engine, std::size_t elementCount)
 {
 }
 
+Array::Array(Engine &engine, const std::vector<float> &values) : Array{engine} { copyFrom(values); }
+
+Array::Array(Engine &engine, std::initializer_list<float> values) : Array{engine}
+{
+	copyFrom(values);
+}
+
+Array::Array(Engine &engine, std::size_t elementCount, float value) : Array{engine}
+{
+	assign(elementCount, value);
+}
+
 Array::~Array() noexcept = default;
 Array::Array(Array &&) noexcept = default;
 Array &Array::operator=(Array &&) noexcept = default;
@@ -608,11 +620,11 @@ void internal::FusionPlan::releaseRegister(int reg)
 	}
 }
 
-ScheduledPlan::ScheduledPlan() : impl_{std::make_shared<internal::ScheduledPlanData>()} {}
+internal::ScheduledPlan::ScheduledPlan() : impl_{std::make_shared<internal::ScheduledPlanData>()} {}
 
-ScheduledPlan::~ScheduledPlan() noexcept = default;
+internal::ScheduledPlan::~ScheduledPlan() noexcept = default;
 
-void ScheduledPlan::execute() const noexcept
+void internal::ScheduledPlan::execute() const noexcept
 {
 	if (impl_->stages.empty())
 		return;
@@ -631,9 +643,9 @@ void ScheduledPlan::execute() const noexcept
 	}
 }
 
-std::size_t ScheduledPlan::stageCount() const noexcept { return impl_->stages.size(); }
+std::size_t internal::ScheduledPlan::stageCount() const noexcept { return impl_->stages.size(); }
 
-std::size_t ScheduledPlan::instructionCount() const noexcept
+std::size_t internal::ScheduledPlan::instructionCount() const noexcept
 {
 	std::size_t total{};
 
@@ -644,7 +656,7 @@ std::size_t ScheduledPlan::instructionCount() const noexcept
 	return total;
 }
 
-int ScheduledPlan::maxRegisterCount() const noexcept
+int internal::ScheduledPlan::maxRegisterCount() const noexcept
 {
 	int result{};
 
@@ -888,6 +900,42 @@ struct Compiler {
 			collectReads(engine, n.lhs, reads);
 		if (n.rhs != INVALID_NODE)
 			collectReads(engine, n.rhs, reads);
+	}
+
+	static const FloatArray *findFirstRead(const Engine &engine, std::size_t nodeId) noexcept
+	{
+		const ExprNode &n{engine.impl_->nodes[nodeId]};
+
+		if (n.kind == NodeKind::Variable) {
+			return n.array;
+		}
+
+		if (n.lhs != INVALID_NODE) {
+			const FloatArray *lhs{findFirstRead(engine, n.lhs)};
+			if (lhs != nullptr) {
+				return lhs;
+			}
+		}
+
+		if (n.rhs != INVALID_NODE) {
+			return findFirstRead(engine, n.rhs);
+		}
+
+		return nullptr;
+	}
+
+	static void resizeOutputIfEmpty(const Engine &engine, Variable &output,
+	                                const Expression &expr)
+	{
+		FloatArray &outputArray{output.array()};
+		if (outputArray.elementCount() != 0) {
+			return;
+		}
+
+		const FloatArray *source{findFirstRead(engine, expr.nodeId())};
+		if (source != nullptr) {
+			outputArray.resize(source->elementCount());
+		}
 	}
 
 	static std::vector<std::vector<Assignment>>
@@ -1455,25 +1503,13 @@ Engine::~Engine() noexcept = default;
 
 Array Engine::createArray(std::size_t elementCount) { return Array{*this, elementCount}; }
 
-Array Engine::createArray(const std::vector<float> &values)
-{
-	Array result{createArray()};
-	result.copyFrom(values);
-	return result;
-}
+Array Engine::createArray(const std::vector<float> &values) { return Array{*this, values}; }
 
-Array Engine::createArray(std::initializer_list<float> values)
-{
-	Array result{createArray()};
-	result.copyFrom(values);
-	return result;
-}
+Array Engine::createArray(std::initializer_list<float> values) { return Array{*this, values}; }
 
 Array Engine::createArray(std::size_t elementCount, float value)
 {
-	Array result{createArray()};
-	result.assign(elementCount, value);
-	return result;
+	return Array{*this, elementCount, value};
 }
 
 Expression Engine::makeVariable(const Array &value)
@@ -1547,23 +1583,19 @@ void Engine::deferAssign(Array &out, const Expression &expr)
 	                                    "代入先が別のEngineに紐づいています。");
 	internal::Compiler::requireExprOwner(*this, expr,
 	                                     "代入式が別のEngineに紐づいているか、無効です。");
+	internal::Compiler::resizeOutputIfEmpty(*this, variable, expr);
 
 	impl_->pendingAssignments.push_back(Assignment{out.impl_.get(), expr});
 }
 
 void Engine::execute()
 {
-	ScheduledPlan plan{compile()};
-	plan.execute();
-}
-
-ScheduledPlan Engine::compile()
-{
-	ScheduledPlan plan{internal::Compiler::compileScheduled(*this, impl_->pendingAssignments)};
+	internal::ScheduledPlan plan{
+	    internal::Compiler::compileScheduled(*this, impl_->pendingAssignments)};
 	impl_->pendingAssignments.clear();
 	internal::Compiler::rememberExpressionReserve(*this);
 	impl_->nodes.clear();
-	return plan;
+	plan.execute();
 }
 
 Expression operator+(const Expression &lhs, const Expression &rhs)
