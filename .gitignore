@@ -43,6 +43,11 @@
 build/
 Build/
 build-*/
+x64/
+.vs/
+out/
+SIMDtest/
+*.vcxproj.user
 
 # CMake generated files
 CMakeFiles/
