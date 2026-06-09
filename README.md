@@ -126,7 +126,7 @@ plan.execute();
 ベンチマークは `tests/` に分けています。
 
 ```powershell
-# ベンチマーク結果の標準出力も表示
+# ベンチマーク結果の標準出力を表示
 ctest --test-dir build-cmake -C Release --output-on-failure -V
 ```
 
