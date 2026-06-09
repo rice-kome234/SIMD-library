@@ -7,8 +7,8 @@ namespace simdbench
 /*!
  *   @brief 式融合ベンチマークの結果
  *   @details
- *   `x = a * b + c`、`y = a * b + d`、`z = a * b + e` という3つの式を、
- *   非SIMDスカラー実装、手書きSIMD実装、通常式APIで比較します。
+ *   `ab = a * b` を共有し、`x = ab + c`、`y = ab + d`、`z = ab + e`
+ *   という3つの式を、非SIMDスカラー実装、手書きSIMD実装、通常式APIで比較します。
  */
 struct FusedExpressionBenchmarkResult {
 	std::size_t elementCount{};

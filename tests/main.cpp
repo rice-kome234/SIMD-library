@@ -13,7 +13,7 @@ constexpr float DELTA_TIME{0.016f};
 int main()
 {
 	// ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
-	// a * b を共有する3つの式で、スカラー実装、手書きSIMD、通常式API、
+	// ab = a * b を共有する3つの式で、スカラー実装、手書きSIMD、通常式API、
 	// それぞれの実行時間と誤差を比較します。
 	const simdbench::FusedExpressionBenchmarkResult fused{
 	    simdbench::runFusedExpressionBenchmark(ELEMENT_COUNT, REPEAT_COUNT)};
@@ -27,7 +27,8 @@ int main()
 	std::cout << "要素数      : " << fused.elementCount << "\n";
 	std::cout << "繰り返し回数: " << fused.repeatCount << "\n\n";
 
-	std::cout << "[共有部分式 a * b + (c,d,e) の比較]\n";
+	std::cout << "[共有式 ab = a * b の比較]\n";
+	std::cout << "計算式: x/y/z = ab + c/d/e\n";
 	std::cout << "SIMDなしの通常ループ      : " << fused.scalarMs << " ms\n";
 	std::cout << "手書きSIMD                 : " << fused.manualSimdMs << " ms\n";
 	std::cout << "式API                      : " << fused.normalExpressionMs << " ms\n";
