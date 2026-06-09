@@ -27,7 +27,7 @@ int main()
 	std::cout << "要素数      : " << fused.elementCount << "\n";
 	std::cout << "繰り返し回数: " << fused.repeatCount << "\n\n";
 
-	std::cout << "[共有部分式 a * b + c/d/e の比較]\n";
+	std::cout << "[共有部分式 a * b + (c,d,e) の比較]\n";
 	std::cout << "SIMDなしの通常ループ      : " << fused.scalarMs << " ms\n";
 	std::cout << "手書きSIMD                 : " << fused.manualSimdMs << " ms\n";
 	std::cout << "式APIを毎回コンパイル      : " << fused.normalExpressionMs << " ms\n";
