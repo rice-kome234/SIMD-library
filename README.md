@@ -19,13 +19,29 @@ cmake --build build-cmake --config Release
 
 Visual Studio のジェネレーターでは、`build-cmake\Release\simd.lib` が生成されます。
 
+## 構成
+
+```text
+include/
+  simd.h              公開インターフェース
+src/
+  simd.cpp            実装
+  simd_internal.h     内部型
+  simd_low_level.h    ベンチマーク用の低レベル補助API
+  simd_debug.h        開発用の診断補助API
+tests/
+  ベンチマークと検証コード
+```
+
+利用側は `include/simd.h` とビルド済みライブラリだけで使えます。`src/` 配下のファイルは、実装を確認したい場合やライブラリを再ビルドする場合に見るためのものです。
+
 ## インストール
 
 ```powershell
 cmake --install build-cmake --config Release --prefix install
 ```
 
-インストール対象は、利用者向けの `simd.h` とライブラリ本体です。`simd_internal.h`、`simd_low_level.h`、`simd_debug.h` は開発・ベンチマーク用の補助ヘッダーなので、通常利用では配布しません。
+インストール対象は、利用者向けの `include/simd.h` とライブラリ本体です。`src/simd_internal.h`、`src/simd_low_level.h`、`src/simd_debug.h` は開発・ベンチマーク用の補助ヘッダーなので、通常利用では配布しません。
 
 ```cmake
 find_package(SIMDLibrary CONFIG REQUIRED)
