@@ -43,17 +43,12 @@
 build/
 Build/
 build-*/
+dist/
 x64/
 .vs/
 out/
 SIMDtest/
 *.vcxproj.user
-
-# Minimal distribution package
-dist/*
-!dist/
-!dist/simd.h
-!dist/simd.lib
 
 # CMake generated files
 CMakeFiles/
