@@ -43,6 +43,7 @@
 build/
 Build/
 build-*/
+dist/
 x64/
 .vs/
 out/

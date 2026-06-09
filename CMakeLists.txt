@@ -35,6 +35,21 @@ set_target_properties(simd PROPERTIES
 	PUBLIC_HEADER include/simd.h
 )
 
+set(SIMD_LIBRARY_DIST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dist)
+
+add_custom_target(simd_dist
+	COMMAND ${CMAKE_COMMAND} -E rm -rf ${SIMD_LIBRARY_DIST_DIR}
+	COMMAND ${CMAKE_COMMAND} -E make_directory ${SIMD_LIBRARY_DIST_DIR}
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_CURRENT_SOURCE_DIR}/include/simd.h
+		${SIMD_LIBRARY_DIST_DIR}/simd.h
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		$<TARGET_FILE:simd>
+		${SIMD_LIBRARY_DIST_DIR}/$<TARGET_FILE_NAME:simd>
+	DEPENDS simd
+	COMMENT "Create minimal distribution package in dist/"
+)
+
 if(SIMD_LIBRARY_BUILD_TESTS)
 	include(CTest)
 	add_subdirectory(tests)

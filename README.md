@@ -19,6 +19,25 @@ cmake --build build-cmake --config Release
 
 Visual Studio のジェネレーターでは、`build-cmake\Release\simd.lib` が生成されます。
 
+## バイナリ配布パッケージ
+
+公開ヘッダーと静的ライブラリだけを含む、組み込み用の配布パッケージを生成できます。
+アプリケーション側は公開インターフェースを `simd.h` から参照し、実装本体は `simd.lib` としてリンクします。
+
+```powershell
+cmake --build build-cmake --config Release --target simd_dist
+```
+
+生成される `dist/` には、利用側に必要なファイルだけが配置されます。
+
+```text
+dist/
+  simd.h
+  simd.lib
+```
+
+`src/` や `tests/` は含めないため、利用者は実装の詳細を意識せずにライブラリとして組み込めます。
+
 ## 構成
 
 ```text
