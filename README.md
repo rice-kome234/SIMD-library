@@ -100,3 +100,4 @@ ctest --test-dir build-cmake -C Release --output-on-failure
 ```
 
 ベンチマーク内では手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではありません。通常の利用側は `simd.h` の `Array`、`Engine`、`ScheduledPlan` だけを知っていれば使えます。
+
