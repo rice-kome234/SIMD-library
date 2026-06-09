@@ -19,7 +19,7 @@ cmake --build build-cmake --config Release
 
 Visual Studio のジェネレーターでは、`build-cmake\Release\simd.lib` が生成されます。
 
-## バイナリ配布パッケージ
+## ライブラリの生成
 
 公開ヘッダーと静的ライブラリだけを含む、組み込み用の配布パッケージを生成できます。
 アプリケーション側は公開インターフェースを `simd.h` から参照し、実装本体は `simd.lib` としてリンクします。
@@ -48,21 +48,17 @@ src/
   simd_internal.h     内部型
   simd_low_level.h    ベンチマーク用の低レベル補助API
   simd_debug.h        開発用の診断補助API
+examples/
+  minimal.cpp         最小利用コード
 tests/
   ベンチマークと検証コード
 ```
 
 利用側は `include/simd.h` とビルド済みライブラリだけで使えます。`src/` 配下のファイルは、実装を確認したい場合やライブラリを再ビルドする場合に見るためのものです。
 
-## インストール
-
-```powershell
-cmake --install build-cmake --config Release --prefix install
-```
-
-インストール対象は、利用者向けの `include/simd.h` とライブラリ本体です。`src/simd_internal.h`、`src/simd_low_level.h`、`src/simd_debug.h` は開発・ベンチマーク用の補助ヘッダーなので、通常利用では配布しません。
-
 ## 最小サンプル
+
+実際にビルドできる最小利用コードは `examples/minimal.cpp` に置いています。
 
 ```cpp
 #include "simd.h"
@@ -84,6 +80,19 @@ int main()
 	std::vector<float> result{out.toVector()};
 	return 0;
 }
+```
+
+例だけをビルドしたい場合は、次のように `SIMD_LIBRARY_BUILD_EXAMPLES` を有効にします。
+
+```powershell
+cmake -S . -B build-cmake -DSIMD_LIBRARY_BUILD_EXAMPLES=ON
+cmake --build build-cmake --config Release --target simd_minimal_example
+```
+
+ビルド後にCMakeターゲット経由で実行する場合は、次のコマンドを使ってください。
+
+```powershell
+cmake --build build-cmake --config Release --target run_simd_minimal_example
 ```
 
 ## 値の入れ方
@@ -128,5 +137,5 @@ engine.execute();
 ctest --test-dir build-cmake -C Release --output-on-failure -V
 ```
 
-ベンチマーク内では手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではありません。通常の利用側は `simd.h` の `Array`、`Engine`、式演算子だけを知っていれば使えます。
+ベンチマーク内では手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではないので、通常の利用側は `simd.h` の `Array`、`Engine`だけで扱うことが可能です。
 
