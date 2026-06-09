@@ -345,9 +345,6 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	result.normalExpressionMs = expressionMs;
 	result.compileMs = compileMs;
 	result.scheduledPlanMs = planMs;
-	result.stageCount = fusionPlan.stageCount();
-	result.instructionCount = fusionPlan.instructionCount();
-	result.maxRegisterCount = fusionPlan.maxRegisterCount();
 	result.scalarXError = maxAbsError(manualXS, scalarX);
 	result.expressionXError = maxAbsError(manualXS, expressionXS);
 	result.planXError = maxAbsError(manualXS, planXS);

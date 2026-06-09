@@ -24,30 +24,27 @@ int main()
 	    simdbench::runThreeComponentUpdateBenchmark(ELEMENT_COUNT, REPEAT_COUNT, DELTA_TIME)};
 
 	// 入力サイズと繰り返し回数を先に表示して、実行条件を結果と一緒に確認できるようにします。
-	std::cout << "Element count: " << fused.elementCount << "\n";
-	std::cout << "Repeat count : " << fused.repeatCount << "\n\n";
+	std::cout << "要素数      : " << fused.elementCount << "\n";
+	std::cout << "繰り返し回数: " << fused.repeatCount << "\n\n";
 
-	std::cout << "[Fused expressions]\n";
-	std::cout << "Scalar no SIMD    : " << fused.scalarMs << " ms\n";
-	std::cout << "Manual fused SIMD : " << fused.manualSimdMs << " ms\n";
-	std::cout << "Normal expression : " << fused.normalExpressionMs << " ms\n";
-	std::cout << "Compile once      : " << fused.compileMs << " ms\n";
-	std::cout << "ScheduledPlan     : " << fused.scheduledPlanMs << " ms\n";
-	std::cout << "Stages            : " << fused.stageCount << "\n";
-	std::cout << "Instructions      : " << fused.instructionCount << "\n";
-	std::cout << "Max registers     : " << fused.maxRegisterCount << "\n";
-	std::cout << "scalar x error    : " << fused.scalarXError << "\n";
-	std::cout << "expression x error: " << fused.expressionXError << "\n";
-	std::cout << "plan x error      : " << fused.planXError << "\n\n";
+	std::cout << "[共有部分式 a * b + ? の比較]\n";
+	std::cout << "SIMDなしの通常ループ      : " << fused.scalarMs << " ms\n";
+	std::cout << "手書きSIMD                 : " << fused.manualSimdMs << " ms\n";
+	std::cout << "式APIを毎回コンパイル      : " << fused.normalExpressionMs << " ms\n";
+	std::cout << "プラン作成のみ             : " << fused.compileMs << " ms\n";
+	std::cout << "コンパイル済みプランの実行 : " << fused.scheduledPlanMs << " ms\n";
+	std::cout << "数値誤差(SIMDなし)         : " << fused.scalarXError << "\n";
+	std::cout << "数値誤差(式API)            : " << fused.expressionXError << "\n";
+	std::cout << "数値誤差(コンパイル済み)   : " << fused.planXError << "\n\n";
 
-	std::cout << "[Three-component update specialized]\n";
-	std::cout << "Scalar no SIMD             : " << componentUpdate.scalarMs << " ms\n";
-	std::cout << "Manual 3-component SIMD    : " << componentUpdate.manualSimdMs << " ms\n";
-	std::cout << "Specialized 3-component    : " << componentUpdate.specializedUpdateMs
+	std::cout << "[3成分の位置・速度更新の比較]\n";
+	std::cout << "SIMDなしの通常ループ       : " << componentUpdate.scalarMs << " ms\n";
+	std::cout << "手書きSIMD                 : " << componentUpdate.manualSimdMs << " ms\n";
+	std::cout << "専用更新コード             : " << componentUpdate.specializedUpdateMs
 	          << " ms\n";
-	std::cout << "scalar position.x error     : " << componentUpdate.scalarPositionXError
+	std::cout << "数値誤差(SIMDなし)         : " << componentUpdate.scalarPositionXError
 	          << "\n";
-	std::cout << "specialized position.x error: " << componentUpdate.specializedPositionXError
+	std::cout << "数値誤差(専用更新コード)   : " << componentUpdate.specializedPositionXError
 	          << "\n";
 
 	return 0;

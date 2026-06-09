@@ -62,11 +62,6 @@ cmake --install build-cmake --config Release --prefix install
 
 インストール対象は、利用者向けの `include/simd.h` とライブラリ本体です。`src/simd_internal.h`、`src/simd_low_level.h`、`src/simd_debug.h` は開発・ベンチマーク用の補助ヘッダーなので、通常利用では配布しません。
 
-```cmake
-find_package(SIMDLibrary CONFIG REQUIRED)
-target_link_libraries(app PRIVATE SIMDLibrary::simd)
-```
-
 ## 最小サンプル
 
 ```cpp
@@ -131,7 +126,11 @@ plan.execute();
 ベンチマークは `tests/` に分けています。
 
 ```powershell
+# テスト結果だけ確認
 ctest --test-dir build-cmake -C Release --output-on-failure
+
+# ベンチマーク結果の標準出力も表示
+ctest --test-dir build-cmake -C Release --output-on-failure -V
 ```
 
 ベンチマーク内では手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではありません。通常の利用側は `simd.h` の `Array`、`Engine`、`ScheduledPlan` だけを知っていれば使えます。

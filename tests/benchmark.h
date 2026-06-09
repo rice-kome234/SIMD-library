@@ -20,10 +20,6 @@ struct FusedExpressionBenchmarkResult {
 	double compileMs{};
 	double scheduledPlanMs{};
 
-	std::size_t stageCount{};
-	std::size_t instructionCount{};
-	int maxRegisterCount{};
-
 	float scalarXError{};
 	float expressionXError{};
 	float planXError{};
@@ -52,7 +48,7 @@ struct ThreeComponentUpdateBenchmarkResult {
  *   @brief 式融合ベンチマークを実行
  *   @param[in] elementCount 処理するfloat要素数
  *   @param[in] repeatCount 同じ処理を繰り返す回数
- *   @return 計測時間、プラン情報、誤差をまとめた結果
+ *   @return 計測時間と数値誤差をまとめた結果
  *   @note 乱数シードは関数内で固定しているため、実行ごとの入力は再現可能です。
  */
 FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCount,
