@@ -21,10 +21,19 @@ using rice::simd::Array;
 using rice::simd::Engine;
 namespace low_level = rice::simd::low_level;
 
-#if defined(__GNUC__) && !defined(__clang__)
-#define SIMDTEST_NO_VECTORIZE __attribute__((optimize("no-tree-vectorize")))
+// 通常ループの基準値を「SIMDなし」として測るため、自動ベクトル化を抑えます。
+#if defined(_MSC_VER)
+#define SIMD_BENCH_DISABLE_LOOP_VECTORIZATION __pragma(loop(no_vector))
+#elif defined(__clang__)
+#define SIMD_BENCH_DISABLE_LOOP_VECTORIZATION _Pragma("clang loop vectorize(disable)")
 #else
-#define SIMDTEST_NO_VECTORIZE
+#define SIMD_BENCH_DISABLE_LOOP_VECTORIZATION
+#endif
+
+#if defined(__GNUC__) && !defined(__clang__)
+#define SIMD_BENCH_NO_VECTORIZE_FUNCTION __attribute__((optimize("no-tree-vectorize")))
+#else
+#define SIMD_BENCH_NO_VECTORIZE_FUNCTION
 #endif
 
 class Timer
@@ -91,77 +100,44 @@ float maxAbsError(const std::vector<float> &lhs, const std::vector<float> &rhs)
 	return maxError;
 }
 
-struct ThreeComponentUpdatePlan {
-	std::size_t blockCount{};
-	__m256 dt{_mm256_setzero_ps()};
+void makeThreeComponentUpdatePlan(Engine &engine, ThreeComponentArrays &position,
+                                  ThreeComponentArrays &velocity,
+                                  const ThreeComponentArrays &acceleration, float dt)
+{
+	velocity.x += acceleration.x * dt;
+	velocity.y += acceleration.y * dt;
+	velocity.z += acceleration.z * dt;
 
-	__m256 *positionX{};
-	__m256 *positionY{};
-	__m256 *positionZ{};
+	position.x += velocity.x * dt;
+	position.y += velocity.y * dt;
+	position.z += velocity.z * dt;
 
-	__m256 *velocityX{};
-	__m256 *velocityY{};
-	__m256 *velocityZ{};
-
-	const __m256 *accelerationX{};
-	const __m256 *accelerationY{};
-	const __m256 *accelerationZ{};
-
-	void execute() const{
-		for (std::size_t i{}; i < blockCount; ++i) {
-			velocityX[i] = _mm256_fmadd_ps(accelerationX[i], dt, velocityX[i]);
-			velocityY[i] = _mm256_fmadd_ps(accelerationY[i], dt, velocityY[i]);
-			velocityZ[i] = _mm256_fmadd_ps(accelerationZ[i], dt, velocityZ[i]);
-
-			positionX[i] = _mm256_fmadd_ps(velocityX[i], dt, positionX[i]);
-			positionY[i] = _mm256_fmadd_ps(velocityY[i], dt, positionY[i]);
-			positionZ[i] = _mm256_fmadd_ps(velocityZ[i], dt, positionZ[i]);
-		}
-	}
-};
-
-ThreeComponentUpdatePlan makeThreeComponentUpdatePlan(ThreeComponentArrays &position,
-                                                      ThreeComponentArrays &velocity,
-                                                      const ThreeComponentArrays &acceleration,
-                                                      float dt){
-	ThreeComponentUpdatePlan plan{};
-	plan.blockCount = low_level::blockCount(position.x);
-	plan.dt = _mm256_set1_ps(dt);
-
-	plan.positionX = low_level::data(position.x);
-	plan.positionY = low_level::data(position.y);
-	plan.positionZ = low_level::data(position.z);
-
-	plan.velocityX = low_level::data(velocity.x);
-	plan.velocityY = low_level::data(velocity.y);
-	plan.velocityZ = low_level::data(velocity.z);
-
-	plan.accelerationX = low_level::data(acceleration.x);
-	plan.accelerationY = low_level::data(acceleration.y);
-	plan.accelerationZ = low_level::data(acceleration.z);
-
-	return plan;
+	engine.execute();
 }
 
 void executeManualMultiplyAdd(const Array &a, const Array &b, const Array &c, const Array &d,
-                                    const Array &e, Array &x, Array &y, Array &z){
+                              const Array &e, Array &x, Array &y, Array &z)
+{
 	for (std::size_t i{}; i < low_level::blockCount(x); ++i) {
-		low_level::block(x, i) = _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))), low_level::block(c, i));
-		low_level::block(y, i) = _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))), low_level::block(d, i));
-		low_level::block(z, i) = _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))), low_level::block(e, i));
+		low_level::block(x, i) =
+		    _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))),
+		                  low_level::block(c, i));
+		low_level::block(y, i) =
+		    _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))),
+		                  low_level::block(d, i));
+		low_level::block(z, i) =
+		    _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))),
+		                  low_level::block(e, i));
 	}
 }
 
-SIMDTEST_NO_VECTORIZE void
+SIMD_BENCH_NO_VECTORIZE_FUNCTION void
 executeScalarMultiplyAdd(const std::vector<float> &a, const std::vector<float> &b,
-                               const std::vector<float> &c, const std::vector<float> &d,
-                               const std::vector<float> &e, std::vector<float> &x,
-                               std::vector<float> &y, std::vector<float> &z){
-#if defined(_MSC_VER)
-#pragma loop(no_vector)
-#elif defined(__clang__)
-#pragma clang loop vectorize(disable)
-#endif
+                         const std::vector<float> &c, const std::vector<float> &d,
+                         const std::vector<float> &e, std::vector<float> &x, std::vector<float> &y,
+                         std::vector<float> &z)
+{
+	SIMD_BENCH_DISABLE_LOOP_VECTORIZATION
 	for (std::size_t i{}; i < x.size(); ++i) {
 
 		x[i] = a[i] * b[i] + c[i];
@@ -170,9 +146,9 @@ executeScalarMultiplyAdd(const std::vector<float> &a, const std::vector<float> &
 	}
 }
 
-void executeExpressionApiMultiplyAdd(Engine& engine, const Array& a, const Array& b,
-	const Array& c, const Array& d, const Array& e, Array& x,
-	Array& y, Array& z){
+void executeExpressionApiMultiplyAdd(Engine &engine, const Array &a, const Array &b, const Array &c,
+                                     const Array &d, const Array &e, Array &x, Array &y, Array &z)
+{
 	x = a * b + c;
 	y = a * b + d;
 	z = a * b + e;
@@ -181,7 +157,8 @@ void executeExpressionApiMultiplyAdd(Engine& engine, const Array& a, const Array
 }
 
 void directThreeComponentUpdate(ThreeComponentArrays &position, ThreeComponentArrays &velocity,
-                                const ThreeComponentArrays &acceleration, float dt){
+                                const ThreeComponentArrays &acceleration, float dt)
+{
 	const __m256 dtBlock{_mm256_set1_ps(dt)};
 
 	for (std::size_t i{}; i < low_level::blockCount(position.x); ++i) {
@@ -205,16 +182,13 @@ void directThreeComponentUpdate(ThreeComponentArrays &position, ThreeComponentAr
 	}
 }
 
-SIMDTEST_NO_VECTORIZE void directScalarThreeComponentUpdate(
+SIMD_BENCH_NO_VECTORIZE_FUNCTION void directScalarThreeComponentUpdate(
     std::vector<float> &positionX, std::vector<float> &positionY, std::vector<float> &positionZ,
     std::vector<float> &velocityX, std::vector<float> &velocityY, std::vector<float> &velocityZ,
     const std::vector<float> &accelerationX, const std::vector<float> &accelerationY,
-    const std::vector<float> &accelerationZ, float dt){
-#if defined(_MSC_VER)
-#pragma loop(no_vector)
-#elif defined(__clang__)
-#pragma clang loop vectorize(disable)
-#endif
+    const std::vector<float> &accelerationZ, float dt)
+{
+	SIMD_BENCH_DISABLE_LOOP_VECTORIZATION
 	for (std::size_t i{}; i < positionX.size(); ++i) {
 		velocityX[i] += accelerationX[i] * dt;
 		velocityY[i] += accelerationY[i] * dt;
@@ -226,7 +200,8 @@ SIMDTEST_NO_VECTORIZE void directScalarThreeComponentUpdate(
 	}
 }
 
-void copyThreeComponent(const ThreeComponentArrays &source, ThreeComponentArrays &destination){
+void copyThreeComponent(const ThreeComponentArrays &source, ThreeComponentArrays &destination)
+{
 	destination.x.copyFrom(source.x);
 	destination.y.copyFrom(source.y);
 	destination.z.copyFrom(source.z);
@@ -234,7 +209,8 @@ void copyThreeComponent(const ThreeComponentArrays &source, ThreeComponentArrays
 }
 
 FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCount,
-                                                           int repeatCount){
+                                                           int repeatCount)
+{
 	Engine engine{};
 
 	Array a{engine, elementCount};
@@ -272,7 +248,7 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 
 	for (int i{}; i < repeatCount; ++i) {
 		executeScalarMultiplyAdd(scalarA, scalarB, scalarC, scalarD, scalarE, scalarX,
-		                               scalarY, scalarZ);
+		                         scalarY, scalarZ);
 	}
 
 	const double scalarMs{scalarTimer.elapsedMilliseconds()};
@@ -296,8 +272,8 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	Timer expressionTimer{};
 
 	for (int i{}; i < repeatCount; ++i) {
-		executeExpressionApiMultiplyAdd(engine, a, b, c, d, e, expressionX,
-		                                      expressionY, expressionZ);
+		executeExpressionApiMultiplyAdd(engine, a, b, c, d, e, expressionX, expressionY,
+		                                expressionZ);
 	}
 
 	const double expressionMs{expressionTimer.elapsedMilliseconds()};
@@ -314,13 +290,14 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	result.scalarMs = scalarMs;
 	result.manualSimdMs = manualMs;
 	result.normalExpressionMs = expressionMs;
-	result.scalarXError = maxAbsError(scalarX , manualXS);
-	result.expressionXError = maxAbsError(scalarX , expressionXS);
+	result.scalarXError = maxAbsError(scalarX, manualXS);
+	result.expressionXError = maxAbsError(scalarX, expressionXS);
 	return result;
 }
 
 ThreeComponentUpdateBenchmarkResult
-runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, float deltaTime){
+runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, float deltaTime)
+{
 	Engine engine{};
 
 	ThreeComponentArrays initialPosition{engine, elementCount};
@@ -388,13 +365,11 @@ runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, floa
 	copyThreeComponent(initialPosition, specializedPosition);
 	copyThreeComponent(initialVelocity, specializedVelocity);
 
-	ThreeComponentUpdatePlan specializedUpdate{makeThreeComponentUpdatePlan(
-	    specializedPosition, specializedVelocity, acceleration, deltaTime)};
-
 	Timer specializedTimer{};
 
 	for (int i{}; i < repeatCount; ++i) {
-		specializedUpdate.execute();
+		makeThreeComponentUpdatePlan(engine, specializedPosition, specializedVelocity,
+		                             acceleration, deltaTime);
 	}
 
 	const double specializedMs{specializedTimer.elapsedMilliseconds()};
@@ -412,7 +387,7 @@ runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, floa
 	result.scalarMs = scalarMs;
 	result.manualSimdMs = directThreeComponentMs;
 	result.specializedUpdateMs = specializedMs;
-	result.scalarPositionXError = maxAbsError(scalarPositionX , directPosXS);
+	result.scalarPositionXError = maxAbsError(scalarPositionX, directPosXS);
 	result.specializedPositionXError = maxAbsError(scalarPositionX, specializedPosXS);
 	return result;
 }
