@@ -107,8 +107,7 @@ struct ThreeComponentUpdatePlan {
 	const __m256 *accelerationY{};
 	const __m256 *accelerationZ{};
 
-	void execute() const
-	{
+	void execute() const{
 		for (std::size_t i{}; i < blockCount; ++i) {
 			velocityX[i] = _mm256_fmadd_ps(accelerationX[i], dt, velocityX[i]);
 			velocityY[i] = _mm256_fmadd_ps(accelerationY[i], dt, velocityY[i]);
@@ -124,8 +123,7 @@ struct ThreeComponentUpdatePlan {
 ThreeComponentUpdatePlan makeThreeComponentUpdatePlan(ThreeComponentArrays &position,
                                                       ThreeComponentArrays &velocity,
                                                       const ThreeComponentArrays &acceleration,
-                                                      float dt)
-{
+                                                      float dt){
 	ThreeComponentUpdatePlan plan{};
 	plan.blockCount = low_level::blockCount(position.x);
 	plan.dt = _mm256_set1_ps(dt);
@@ -145,55 +143,45 @@ ThreeComponentUpdatePlan makeThreeComponentUpdatePlan(ThreeComponentArrays &posi
 	return plan;
 }
 
-void executeManualSharedMultiplyAdd(const Array &a, const Array &b, const Array &c, const Array &d,
-                                    const Array &e, Array &x, Array &y, Array &z)
-{
-	// ab = a * b を共有し、x/y/zには別々の加算項を足します。
+void executeManualMultiplyAdd(const Array &a, const Array &b, const Array &c, const Array &d,
+                                    const Array &e, Array &x, Array &y, Array &z){
 	for (std::size_t i{}; i < low_level::blockCount(x); ++i) {
-		const __m256 ab{_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))};
-
-		low_level::block(x, i) = _mm256_add_ps(ab, low_level::block(c, i));
-		low_level::block(y, i) = _mm256_add_ps(ab, low_level::block(d, i));
-		low_level::block(z, i) = _mm256_add_ps(ab, low_level::block(e, i));
+		low_level::block(x, i) = _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))), low_level::block(c, i));
+		low_level::block(y, i) = _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))), low_level::block(d, i));
+		low_level::block(z, i) = _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))), low_level::block(e, i));
 	}
 }
 
 SIMDTEST_NO_VECTORIZE void
-executeScalarSharedMultiplyAdd(const std::vector<float> &a, const std::vector<float> &b,
+executeScalarMultiplyAdd(const std::vector<float> &a, const std::vector<float> &b,
                                const std::vector<float> &c, const std::vector<float> &d,
                                const std::vector<float> &e, std::vector<float> &x,
-                               std::vector<float> &y, std::vector<float> &z)
-{
+                               std::vector<float> &y, std::vector<float> &z){
 #if defined(_MSC_VER)
 #pragma loop(no_vector)
 #elif defined(__clang__)
 #pragma clang loop vectorize(disable)
 #endif
 	for (std::size_t i{}; i < x.size(); ++i) {
-		const float ab{a[i] * b[i]};
 
-		x[i] = ab + c[i];
-		y[i] = ab + d[i];
-		z[i] = ab + e[i];
+		x[i] = a[i] * b[i] + c[i];
+		y[i] = a[i] * b[i] + d[i];
+		z[i] = a[i] * b[i] + e[i];
 	}
 }
 
-void executeExpressionApiSharedMultiplyAdd(Engine &engine, const Array &a, const Array &b,
-                                           const Array &c, const Array &d, const Array &e, Array &x,
-                                           Array &y, Array &z)
-{
-	const auto ab{a * b};
-
-	x = ab + c;
-	y = ab + d;
-	z = ab + e;
+void executeExpressionApiMultiplyAdd(Engine& engine, const Array& a, const Array& b,
+	const Array& c, const Array& d, const Array& e, Array& x,
+	Array& y, Array& z){
+	x = a * b + c;
+	y = a * b + d;
+	z = a * b + e;
 
 	engine.execute();
 }
 
 void directThreeComponentUpdate(ThreeComponentArrays &position, ThreeComponentArrays &velocity,
-                                const ThreeComponentArrays &acceleration, float dt)
-{
+                                const ThreeComponentArrays &acceleration, float dt){
 	const __m256 dtBlock{_mm256_set1_ps(dt)};
 
 	for (std::size_t i{}; i < low_level::blockCount(position.x); ++i) {
@@ -221,8 +209,7 @@ SIMDTEST_NO_VECTORIZE void directScalarThreeComponentUpdate(
     std::vector<float> &positionX, std::vector<float> &positionY, std::vector<float> &positionZ,
     std::vector<float> &velocityX, std::vector<float> &velocityY, std::vector<float> &velocityZ,
     const std::vector<float> &accelerationX, const std::vector<float> &accelerationY,
-    const std::vector<float> &accelerationZ, float dt)
-{
+    const std::vector<float> &accelerationZ, float dt){
 #if defined(_MSC_VER)
 #pragma loop(no_vector)
 #elif defined(__clang__)
@@ -239,8 +226,7 @@ SIMDTEST_NO_VECTORIZE void directScalarThreeComponentUpdate(
 	}
 }
 
-void copyThreeComponent(const ThreeComponentArrays &source, ThreeComponentArrays &destination)
-{
+void copyThreeComponent(const ThreeComponentArrays &source, ThreeComponentArrays &destination){
 	destination.x.copyFrom(source.x);
 	destination.y.copyFrom(source.y);
 	destination.z.copyFrom(source.z);
@@ -248,8 +234,7 @@ void copyThreeComponent(const ThreeComponentArrays &source, ThreeComponentArrays
 }
 
 FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCount,
-                                                           int repeatCount)
-{
+                                                           int repeatCount){
 	Engine engine{};
 
 	Array a{engine, elementCount};
@@ -286,7 +271,7 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	Timer scalarTimer{};
 
 	for (int i{}; i < repeatCount; ++i) {
-		executeScalarSharedMultiplyAdd(scalarA, scalarB, scalarC, scalarD, scalarE, scalarX,
+		executeScalarMultiplyAdd(scalarA, scalarB, scalarC, scalarD, scalarE, scalarX,
 		                               scalarY, scalarZ);
 	}
 
@@ -299,7 +284,7 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	Timer manualTimer{};
 
 	for (int i{}; i < repeatCount; ++i) {
-		executeManualSharedMultiplyAdd(a, b, c, d, e, manualX, manualY, manualZ);
+		executeManualMultiplyAdd(a, b, c, d, e, manualX, manualY, manualZ);
 	}
 
 	const double manualMs{manualTimer.elapsedMilliseconds()};
@@ -311,7 +296,7 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	Timer expressionTimer{};
 
 	for (int i{}; i < repeatCount; ++i) {
-		executeExpressionApiSharedMultiplyAdd(engine, a, b, c, d, e, expressionX,
+		executeExpressionApiMultiplyAdd(engine, a, b, c, d, e, expressionX,
 		                                      expressionY, expressionZ);
 	}
 
@@ -335,8 +320,7 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 }
 
 ThreeComponentUpdateBenchmarkResult
-runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, float deltaTime)
-{
+runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, float deltaTime){
 	Engine engine{};
 
 	ThreeComponentArrays initialPosition{engine, elementCount};

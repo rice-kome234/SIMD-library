@@ -17,6 +17,7 @@ struct FusedExpressionBenchmarkResult {
 	double scalarMs{};
 	double manualSimdMs{};
 	double normalExpressionMs{};
+	double expressionSharedMs{};
 
 	float scalarXError{};
 	float expressionXError{};
