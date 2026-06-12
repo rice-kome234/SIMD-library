@@ -4,8 +4,7 @@
 #include <iostream>
 #include <vector>
 
-int main()
-{
+int main(){
 	rice::simd::Engine engine{};
 
 	rice::simd::Array a{engine, {1.0f, 2.0f, 3.0f, 4.0f}};
@@ -20,10 +19,10 @@ int main()
 	std::vector<float> result{out.toVector()};
 
 	std::cout << "result: ";
+
 	for (const auto &value : result) {
 		std::cout << value << " ";
 	}
-	std::cout << "\n";
 
 	return 0;
 }
