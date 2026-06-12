@@ -10,7 +10,7 @@ namespace rice::simd::internal
 struct DebugAccess {
 	static const ScheduledPlanData &data(const ScheduledPlan &plan) noexcept
 	{
-		return *plan.impl_;
+		return plan.data_;
 	}
 };
 }
