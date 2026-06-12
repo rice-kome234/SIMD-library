@@ -1,4 +1,4 @@
-#include "benchmark.h"
+﻿#include "benchmark.h"
 
 #include "simd.h"
 #include "simd_low_level.h"
@@ -329,8 +329,8 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	result.scalarMs = scalarMs;
 	result.manualSimdMs = manualMs;
 	result.normalExpressionMs = expressionMs;
-	result.scalarXError = maxAbsError(manualXS, scalarX);
-	result.expressionXError = maxAbsError(manualXS, expressionXS);
+	result.scalarXError = maxAbsError(scalarX , manualXS);
+	result.expressionXError = maxAbsError(scalarX , expressionXS);
 	return result;
 }
 
@@ -428,8 +428,8 @@ runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, floa
 	result.scalarMs = scalarMs;
 	result.manualSimdMs = directThreeComponentMs;
 	result.specializedUpdateMs = specializedMs;
-	result.scalarPositionXError = maxAbsError(directPosXS, scalarPositionX);
-	result.specializedPositionXError = maxAbsError(directPosXS, specializedPosXS);
+	result.scalarPositionXError = maxAbsError(scalarPositionX , directPosXS);
+	result.specializedPositionXError = maxAbsError(scalarPositionX, specializedPosXS);
 	return result;
 }
 }

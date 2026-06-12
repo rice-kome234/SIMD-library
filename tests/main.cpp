@@ -29,22 +29,19 @@ int main()
 
 	std::cout << "[共有式 ab = a * b の比較]\n";
 	std::cout << "計算式: x/y/z = ab + c/d/e\n";
-	std::cout << "SIMDなしの通常ループ      : " << fused.scalarMs << " ms\n";
-	std::cout << "手書きSIMD                 : " << fused.manualSimdMs << " ms\n";
-	std::cout << "式API                      : " << fused.normalExpressionMs << " ms\n";
-	std::cout << "数値誤差(SIMDなし)         : " << fused.scalarXError << "\n";
-	std::cout << "数値誤差(式API)            : " << fused.expressionXError << "\n";
+	std::cout << "SIMDなしの通常ループ         : " << fused.scalarMs << " ms\n";
+	std::cout << "手書きSIMD                   : " << fused.manualSimdMs << " ms\n";
+	std::cout << "式API                        : " << fused.normalExpressionMs << " ms\n";
+	std::cout << "数値誤差(通常ループ と SIMD) : " << fused.scalarXError << "\n";
+	std::cout << "数値誤差(通常ループ と 式API): " << fused.expressionXError << "\n";
 	std::cout << "\n";
 
 	std::cout << "[3成分の位置・速度更新の比較]\n";
-	std::cout << "SIMDなしの通常ループ       : " << componentUpdate.scalarMs << " ms\n";
-	std::cout << "手書きSIMD                 : " << componentUpdate.manualSimdMs << " ms\n";
-	std::cout << "専用更新コード             : " << componentUpdate.specializedUpdateMs
-	          << " ms\n";
-	std::cout << "数値誤差(SIMDなし)         : " << componentUpdate.scalarPositionXError
-	          << "\n";
-	std::cout << "数値誤差(専用更新コード)   : " << componentUpdate.specializedPositionXError
-	          << "\n";
+	std::cout << "SIMDなしの通常ループ                  : " << componentUpdate.scalarMs << " ms\n";
+	std::cout << "手書きSIMD                            : " << componentUpdate.manualSimdMs << " ms\n";
+	std::cout << "専用更新コード                        : " << componentUpdate.specializedUpdateMs<< " ms\n";
+	std::cout << "数値誤差(通常ループ と SIMD)          : " << componentUpdate.scalarPositionXError<< "\n";
+	std::cout << "数値誤差(通常ループ と 専用更新コード): " << componentUpdate.specializedPositionXError << "\n";
 
 	return 0;
 }
