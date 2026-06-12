@@ -210,6 +210,30 @@ Array &Array::operator=(std::initializer_list<float> values)
 	return *this;
 }
 
+Array &Array::operator+=(const Expression &expr) { return operator=(*this + expr); }
+
+Array &Array::operator+=(const Array &value) { return operator=(*this + value); }
+
+Array &Array::operator+=(float value) { return operator=(*this + value); }
+
+Array &Array::operator-=(const Expression &expr) { return operator=(*this - expr); }
+
+Array &Array::operator-=(const Array &value) { return operator=(*this - value); }
+
+Array &Array::operator-=(float value) { return operator=(*this - value); }
+
+Array &Array::operator*=(const Expression &expr) { return operator=((*this) * expr); }
+
+Array &Array::operator*=(const Array &value) { return operator=((*this) * value); }
+
+Array &Array::operator*=(float value) { return operator=((*this) * value); }
+
+Array &Array::operator/=(const Expression &expr) { return operator=(*this / expr); }
+
+Array &Array::operator/=(const Array &value) { return operator=(*this / value); }
+
+Array &Array::operator/=(float value) { return operator=(*this / value); }
+
 void Array::resize(std::size_t elementCount)
 {
 	assert(impl_ != nullptr);

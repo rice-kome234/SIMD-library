@@ -13,21 +13,20 @@ constexpr float DELTA_TIME{0.016f};
 int main()
 {
 	// ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
-	// ab = a * b を共有する3つの式で、スカラー実装、手書きSIMD、通常式API、
-	// それぞれの実行時間と誤差を比較します。
+	
+	// 通常式でのベンチマーク
 	const simdbench::FusedExpressionBenchmarkResult fused{
 	    simdbench::runFusedExpressionBenchmark(ELEMENT_COUNT, REPEAT_COUNT)};
 
-	// 3成分データの位置・速度更新で、汎用的な式合成ではなく専用更新コードにした場合の
-	// 効果を測ります。
+	//Vector3の位置・速度更新のベンチマーク
 	const simdbench::ThreeComponentUpdateBenchmarkResult componentUpdate{
 	    simdbench::runThreeComponentUpdateBenchmark(ELEMENT_COUNT, REPEAT_COUNT, DELTA_TIME)};
 
-	// 入力サイズと繰り返し回数を先に表示して、実行条件を結果と一緒に確認できるようにします。
+	// 入力サイズと繰り返し回数を先に表示して、実行条件を結果と一緒に確認できるようにしています。
 	std::cout << "要素数      : " << fused.elementCount << "\n";
 	std::cout << "繰り返し回数: " << fused.repeatCount << "\n\n";
 
-	std::cout << "[計算式: x/y/z = a * b + c/d/eの比較}\n";
+	std::cout << "[計算式: x/y/z = a * b + c/d/e の比較]\n";
 	std::cout << "SIMDなしの通常ループ         : " << fused.scalarMs << " ms\n";
 	std::cout << "手書きSIMD                   : " << fused.manualSimdMs << " ms\n";
 	std::cout << "式API                        : " << fused.normalExpressionMs << " ms\n";
@@ -36,11 +35,11 @@ int main()
 	std::cout << "\n";
 
 	std::cout << "[3成分の位置・速度更新の比較]\n";
-	std::cout << "SIMDなしの通常ループ                  : " << componentUpdate.scalarMs << " ms\n";
-	std::cout << "手書きSIMD                            : " << componentUpdate.manualSimdMs << " ms\n";
-	std::cout << "専用更新コード                        : " << componentUpdate.specializedUpdateMs<< " ms\n";
-	std::cout << "数値誤差(通常ループ と SIMD)          : " << componentUpdate.scalarPositionXError<< "\n";
-	std::cout << "数値誤差(通常ループ と 専用更新コード): " << componentUpdate.specializedPositionXError << "\n";
+	std::cout << "SIMDなしの通常ループ                  : " << componentUpdate.scalarMs<< " ms\n";
+	std::cout << "手書きSIMD                            : " << componentUpdate.manualSimdMs<< " ms\n";
+	std::cout << "式API                                 : "<< componentUpdate.specializedUpdateMs << " ms\n";
+	std::cout << "数値誤差(通常ループ と SIMD)          : "<< componentUpdate.scalarPositionXError << "\n";
+	std::cout << "数値誤差(通常ループ と 式API)         : "<< componentUpdate.specializedPositionXError << "\n";
 
 	return 0;
 }

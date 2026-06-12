@@ -102,6 +102,31 @@ public:
 	Array &operator=(std::initializer_list<float> values);
 
 	/*!
+	 *   @name 複合代入演算子
+	 *   @brief 現在の配列値を使う遅延代入を追加します。
+	 *   @details `array += expr;` は `array = array + expr;` と同じ意味です。
+	 *            実際の計算はEngine::execute()で行います。
+	 *            左辺の現在値を読むため、左辺配列には事前に要素数が必要です。
+	 *   @{
+	 */
+	Array &operator+=(const Expression &expr);
+	Array &operator+=(const Array &value);
+	Array &operator+=(float value);
+
+	Array &operator-=(const Expression &expr);
+	Array &operator-=(const Array &value);
+	Array &operator-=(float value);
+
+	Array &operator*=(const Expression &expr);
+	Array &operator*=(const Array &value);
+	Array &operator*=(float value);
+
+	Array &operator/=(const Expression &expr);
+	Array &operator/=(const Array &value);
+	Array &operator/=(float value);
+	/*! @} */
+
+	/*!
 	 *   @brief 配列サイズを変更して0初期化
 	 *   @param[in] elementCount 新しい論理要素数
 	 *   @details 内部の処理単位に合わせた領域を確保し、値は0で初期化します。
