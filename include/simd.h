@@ -14,6 +14,7 @@ struct Compiler;
 struct LowLevelAccess;
 struct ArrayData;
 struct EngineData;
+enum class AssignmentKind;
 }
 
 class Engine;
@@ -422,6 +423,7 @@ private:
 	Expression makeMul(const Expression &lhs, const Expression &rhs);
 	Expression makeDiv(const Expression &lhs, const Expression &rhs);
 	void deferAssign(Array &out, const Expression &expr);
+	void deferCompoundAssign(Array &out, const Expression &expr, internal::AssignmentKind kind);
 
 	std::unique_ptr<internal::EngineData> impl_;
 };

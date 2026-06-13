@@ -13,12 +13,12 @@ constexpr float DELTA_TIME{0.016f};
 int main()
 {
 	// ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
-	
+
 	// 通常式でのベンチマーク
 	const simdbench::FusedExpressionBenchmarkResult fused{
 	    simdbench::runFusedExpressionBenchmark(ELEMENT_COUNT, REPEAT_COUNT)};
 
-	//Vector3の位置・速度更新のベンチマーク
+	// Vector3の位置・速度更新のベンチマーク
 	const simdbench::ThreeComponentUpdateBenchmarkResult componentUpdate{
 	    simdbench::runThreeComponentUpdateBenchmark(ELEMENT_COUNT, REPEAT_COUNT, DELTA_TIME)};
 
@@ -35,11 +35,16 @@ int main()
 	std::cout << "\n";
 
 	std::cout << "[3成分の位置・速度更新の比較]\n";
-	std::cout << "SIMDなしの通常ループ                  : " << componentUpdate.scalarMs<< " ms\n";
-	std::cout << "手書きSIMD                            : " << componentUpdate.manualSimdMs<< " ms\n";
-	std::cout << "式API                                 : "<< componentUpdate.specializedUpdateMs << " ms\n";
-	std::cout << "数値誤差(通常ループ と SIMD)          : "<< componentUpdate.scalarPositionXError << "\n";
-	std::cout << "数値誤差(通常ループ と 式API)         : "<< componentUpdate.specializedPositionXError << "\n";
+	std::cout << "SIMDなしの通常ループ                  : " << componentUpdate.scalarMs
+	          << " ms\n";
+	std::cout << "手書きSIMD                            : " << componentUpdate.manualSimdMs
+	          << " ms\n";
+	std::cout << "式API                                 : "
+	          << componentUpdate.specializedUpdateMs << " ms\n";
+	std::cout << "数値誤差(通常ループ と SIMD)          : "
+	          << componentUpdate.scalarPositionXError << "\n";
+	std::cout << "数値誤差(通常ループ と 式API)         : "
+	          << componentUpdate.specializedPositionXError << "\n";
 
 	return 0;
 }
