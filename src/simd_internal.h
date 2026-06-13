@@ -67,9 +67,12 @@ struct ArrayData {
 	Variable variable;
 };
 
+enum class AssignmentKind { Assign, AddAssign, SubAssign, MulAssign, DivAssign };
+
 struct Assignment {
 	ArrayData *out_{};
 	Expression expr_{};
+	AssignmentKind kind{AssignmentKind::Assign};
 };
 
 enum class NodeKind { Variable, Scalar, Add, Sub, Mul, Div };
@@ -293,6 +296,21 @@ struct StoreFmaASA {
 	__m256 b;
 	const __m256 *c;
 };
+struct StoreBinaryAA {
+	__m256 *out;
+	const __m256 *a;
+	const __m256 *b;
+};
+struct StoreBinaryAS {
+	__m256 *out;
+	const __m256 *a;
+	__m256 b;
+};
+struct StoreBinarySA {
+	__m256 *out;
+	__m256 a;
+	const __m256 *b;
+};
 
 struct SetS {
 	int dst;
@@ -369,6 +387,16 @@ struct FusionPlanData {
 
 	std::vector<StoreFmaAAA> storeFmaAAA;
 	std::vector<StoreFmaASA> storeFmaASA;
+	std::vector<StoreBinaryAA> storeAddAA;
+	std::vector<StoreBinaryAS> storeAddAS;
+	std::vector<StoreBinaryAA> storeSubAA;
+	std::vector<StoreBinaryAS> storeSubAS;
+	std::vector<StoreBinarySA> storeSubSA;
+	std::vector<StoreBinaryAA> storeMulAA;
+	std::vector<StoreBinaryAS> storeMulAS;
+	std::vector<StoreBinaryAA> storeDivAA;
+	std::vector<StoreBinaryAS> storeDivAS;
+	std::vector<StoreBinarySA> storeDivSA;
 
 	std::vector<SetS> setS;
 	std::vector<StoreR> storeR;
@@ -454,7 +482,21 @@ struct AssignmentRange {
 	std::size_t end{};
 };
 
-enum class PendingStoreKind { Value, FmaAAA, FmaASA };
+enum class PendingStoreKind {
+	Value,
+	FmaAAA,
+	FmaASA,
+	AddAA,
+	AddAS,
+	SubAA,
+	SubAS,
+	SubSA,
+	MulAA,
+	MulAS,
+	DivAA,
+	DivAS,
+	DivSA
+};
 
 struct PendingStore {
 	PendingStoreKind kind{PendingStoreKind::Value};
