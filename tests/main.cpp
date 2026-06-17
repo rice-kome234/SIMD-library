@@ -56,18 +56,12 @@ int main()
 
 	std::cout << "[位置と速度の更新処理の比較]\n";
 	std::cout << "SIMDなしの通常ループ                  : " << motionUpdate.scalarMs << " ms\n";
-	std::cout << "手書きSIMD                            : " << motionUpdate.manualSimdMs
-	          << " ms\n";
-	std::cout << "DirectXMath                           : " << motionUpdate.directXMathMs
-	          << " ms\n";
-	std::cout << "式API                                 : " << motionUpdate.specializedUpdateMs
-	          << " ms\n";
-	std::cout << "数値誤差(通常ループ と SIMD)          : " << motionUpdate.scalarPositionXError
-	          << "\n";
-	std::cout << "数値誤差(通常ループ と DXMath)        : "
-	          << motionUpdate.directXMathPositionXError << "\n";
-	std::cout << "数値誤差(通常ループ と 式API)         : "
-	          << motionUpdate.specializedPositionXError << "\n";
+	std::cout << "手書きSIMD                            : " << motionUpdate.manualSimdMs<< " ms\n";
+	std::cout << "DirectXMath                           : " << motionUpdate.directXMathMs<< " ms\n";
+	std::cout << "式API                                 : " << motionUpdate.specializedUpdateMs<< " ms\n";
+	std::cout << "数値誤差(通常ループ と SIMD)          : " << motionUpdate.scalarPositionXError<< "\n";
+	std::cout << "数値誤差(通常ループ と DXMath)        : "<< motionUpdate.directXMathPositionXError << "\n";
+	std::cout << "数値誤差(通常ループ と 式API)         : "<< motionUpdate.specializedPositionXError << "\n";
 
 	return 0;
 }
