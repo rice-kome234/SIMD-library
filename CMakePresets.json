@@ -1,0 +1,72 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "SIMD_LIBRARY_BUILD_TESTS": "ON",
+        "SIMD_LIBRARY_BUILD_EXAMPLES": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "x64-debug",
+      "displayName": "x64 Debug",
+      "inherits": "windows-base",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "x64-release",
+      "displayName": "x64 Release",
+      "inherits": "x64-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "displayName": "Build Debug",
+      "configurePreset": "x64-debug"
+    },
+    {
+      "name": "release",
+      "displayName": "Build Release",
+      "configurePreset": "x64-release"
+    },
+    {
+      "name": "package-release",
+      "displayName": "Package simd.h + simd.lib Release",
+      "configurePreset": "x64-release",
+      "targets": ["simd_dist"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "benchmark-release",
+      "displayName": "Run benchmark Release",
+      "configurePreset": "x64-release",
+      "output": {
+        "outputOnFailure": true,
+        "verbosity": "verbose"
+      }
+    }
+  ]
+}

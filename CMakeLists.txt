@@ -44,12 +44,18 @@ add_custom_target(simd_dist
 		$<TARGET_FILE:simd>
 		${SIMD_LIBRARY_DIST_DIR}/$<TARGET_FILE_NAME:simd>
 	DEPENDS simd
-	COMMENT "Create minimal distribution package in dist/"
+	COMMENT "Create dist package with simd.h and simd.lib"
 )
 
 if(SIMD_LIBRARY_BUILD_TESTS)
 	include(CTest)
 	add_subdirectory(tests)
+
+	if(TARGET simd_benchmark)
+		set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY
+			VS_STARTUP_PROJECT simd_benchmark
+		)
+	endif()
 endif()
 
 if(SIMD_LIBRARY_BUILD_EXAMPLES)

@@ -8,7 +8,8 @@ namespace simdbench
  *   @brief 式融合ベンチマークの結果
  *   @details
  *   `ab = a * b` を共有し、`x = ab + c`、`y = ab + d`、`z = ab + e`
- *   という3つの式を、非SIMDスカラー実装、手書きSIMD実装、通常式APIで比較します。
+ *   という3つの式を、非SIMDスカラー実装、手書きSIMD実装、DirectXMath実装、
+ *   通常式APIで比較します。
  */
 struct FusedExpressionBenchmarkResult {
 	std::size_t elementCount{};
@@ -16,17 +17,19 @@ struct FusedExpressionBenchmarkResult {
 
 	double scalarMs{};
 	double manualSimdMs{};
+	double directXMathMs{};
 	double normalExpressionMs{};
 	double expressionSharedMs{};
 
 	float scalarXError{};
+	float directXMathXError{};
 	float expressionXError{};
 };
 
 /*!
  *   @brief 3成分更新ベンチマークの結果
  *   @details
- *   位置と速度の更新を、非SIMDスカラー実装、手書き3成分SIMD実装、
+ *   位置と速度の更新を、非SIMDスカラー実装、手書き3成分SIMD実装、DirectXMath実装、
  *   ベンチマーク内部の専用更新コードで比較します。
  */
 struct ThreeComponentUpdateBenchmarkResult {
@@ -36,9 +39,11 @@ struct ThreeComponentUpdateBenchmarkResult {
 
 	double scalarMs{};
 	double manualSimdMs{};
+	double directXMathMs{};
 	double specializedUpdateMs{};
 
 	float scalarPositionXError{};
+	float directXMathPositionXError{};
 	float specializedPositionXError{};
 };
 

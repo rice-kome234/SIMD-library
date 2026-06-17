@@ -3,6 +3,8 @@
 #include "simd.h"
 #include "simd_low_level.h"
 
+#include <DirectXMath.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -19,6 +21,7 @@ namespace
 {
 using rice::simd::Array;
 using rice::simd::Engine;
+using namespace DirectX;
 namespace low_level = rice::simd::low_level;
 
 // 通常ループの基準値を「SIMDなし」として測るため、自動ベクトル化を抑えます。
@@ -131,8 +134,38 @@ void executeManualMultiplyAdd(const Array &a, const Array &b, const Array &c, co
 	}
 }
 
-SIMD_BENCH_NO_VECTORIZE_FUNCTION void
-executeScalarMultiplyAdd(const std::vector<float> &a, const std::vector<float> &b,
+void executeDirectXMathMultiplyAdd(const std::vector<float> &a, const std::vector<float> &b,
+                                   const std::vector<float> &c, const std::vector<float> &d,
+                                   const std::vector<float> &e, std::vector<float> &x,
+                                   std::vector<float> &y, std::vector<float> &z)
+{
+	constexpr std::size_t directXMathWidth{4};
+	std::size_t i{};
+
+	for (; i + directXMathWidth <= x.size(); i += directXMathWidth) {
+		const XMVECTOR av{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(a.data() + i))};
+		const XMVECTOR bv{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(b.data() + i))};
+		const XMVECTOR cv{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(c.data() + i))};
+		const XMVECTOR dv{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(d.data() + i))};
+		const XMVECTOR ev{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(e.data() + i))};
+
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(x.data() + i),
+		              XMVectorMultiplyAdd(av, bv, cv));
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(y.data() + i),
+		              XMVectorMultiplyAdd(av, bv, dv));
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(z.data() + i),
+		              XMVectorMultiplyAdd(av, bv, ev));
+	}
+
+	for (; i < x.size(); ++i) {
+		x[i] = a[i] * b[i] + c[i];
+		y[i] = a[i] * b[i] + d[i];
+		z[i] = a[i] * b[i] + e[i];
+	}
+}
+
+SIMD_BENCH_NO_VECTORIZE_FUNCTION 
+void executeScalarMultiplyAdd(const std::vector<float> &a, const std::vector<float> &b,
                          const std::vector<float> &c, const std::vector<float> &d,
                          const std::vector<float> &e, std::vector<float> &x, std::vector<float> &y,
                          std::vector<float> &z)
@@ -179,6 +212,66 @@ void directThreeComponentUpdate(ThreeComponentArrays &position, ThreeComponentAr
 
 		low_level::block(position.z, i) = _mm256_fmadd_ps(
 		    low_level::block(velocity.z, i), dtBlock, low_level::block(position.z, i));
+	}
+}
+
+void directXMathThreeComponentUpdate(std::vector<float> &positionX, std::vector<float> &positionY,
+                                     std::vector<float> &positionZ, std::vector<float> &velocityX,
+                                     std::vector<float> &velocityY, std::vector<float> &velocityZ,
+                                     const std::vector<float> &accelerationX,
+                                     const std::vector<float> &accelerationY,
+                                     const std::vector<float> &accelerationZ, float dt)
+{
+	constexpr std::size_t directXMathWidth{4};
+	const XMVECTOR dtVector{XMVectorReplicate(dt)};
+	std::size_t i{};
+
+	for (; i + directXMathWidth <= positionX.size(); i += directXMathWidth) {
+		const XMVECTOR accelerationXV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(accelerationX.data() + i))};
+		const XMVECTOR accelerationYV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(accelerationY.data() + i))};
+		const XMVECTOR accelerationZV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(accelerationZ.data() + i))};
+
+		XMVECTOR velocityXV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(velocityX.data() + i))};
+		XMVECTOR velocityYV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(velocityY.data() + i))};
+		XMVECTOR velocityZV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(velocityZ.data() + i))};
+
+		velocityXV = XMVectorMultiplyAdd(accelerationXV, dtVector, velocityXV);
+		velocityYV = XMVectorMultiplyAdd(accelerationYV, dtVector, velocityYV);
+		velocityZV = XMVectorMultiplyAdd(accelerationZV, dtVector, velocityZV);
+
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(velocityX.data() + i), velocityXV);
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(velocityY.data() + i), velocityYV);
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(velocityZ.data() + i), velocityZV);
+
+		const XMVECTOR positionXV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(positionX.data() + i))};
+		const XMVECTOR positionYV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(positionY.data() + i))};
+		const XMVECTOR positionZV{
+		    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(positionZ.data() + i))};
+
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(positionX.data() + i),
+		              XMVectorMultiplyAdd(velocityXV, dtVector, positionXV));
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(positionY.data() + i),
+		              XMVectorMultiplyAdd(velocityYV, dtVector, positionYV));
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(positionZ.data() + i),
+		              XMVectorMultiplyAdd(velocityZV, dtVector, positionZV));
+	}
+
+	for (; i < positionX.size(); ++i) {
+		velocityX[i] += accelerationX[i] * dt;
+		velocityY[i] += accelerationY[i] * dt;
+		velocityZ[i] += accelerationZ[i] * dt;
+
+		positionX[i] += velocityX[i] * dt;
+		positionY[i] += velocityY[i] * dt;
+		positionZ[i] += velocityZ[i] * dt;
 	}
 }
 
@@ -265,6 +358,22 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 
 	const double manualMs{manualTimer.elapsedMilliseconds()};
 
+	std::vector<float> directXMathX{};
+	std::vector<float> directXMathY{};
+	std::vector<float> directXMathZ{};
+	directXMathX.resize(elementCount);
+	directXMathY.resize(elementCount);
+	directXMathZ.resize(elementCount);
+
+	Timer directXMathTimer{};
+
+	for (int i{}; i < repeatCount; ++i) {
+		executeDirectXMathMultiplyAdd(scalarA, scalarB, scalarC, scalarD, scalarE,
+		                              directXMathX, directXMathY, directXMathZ);
+	}
+
+	const double directXMathMs{directXMathTimer.elapsedMilliseconds()};
+
 	Array expressionX{engine};
 	Array expressionY{engine};
 	Array expressionZ{engine};
@@ -289,8 +398,10 @@ FusedExpressionBenchmarkResult runFusedExpressionBenchmark(std::size_t elementCo
 	result.repeatCount = repeatCount;
 	result.scalarMs = scalarMs;
 	result.manualSimdMs = manualMs;
+	result.directXMathMs = directXMathMs;
 	result.normalExpressionMs = expressionMs;
 	result.scalarXError = maxAbsError(scalarX, manualXS);
+	result.directXMathXError = maxAbsError(scalarX, directXMathX);
 	result.expressionXError = maxAbsError(scalarX, expressionXS);
 	return result;
 }
@@ -336,6 +447,13 @@ runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, floa
 	acceleration.y.copyTo(scalarAccelerationY);
 	acceleration.z.copyTo(scalarAccelerationZ);
 
+	const std::vector<float> initialScalarPositionX{scalarPositionX};
+	const std::vector<float> initialScalarPositionY{scalarPositionY};
+	const std::vector<float> initialScalarPositionZ{scalarPositionZ};
+	const std::vector<float> initialScalarVelocityX{scalarVelocityX};
+	const std::vector<float> initialScalarVelocityY{scalarVelocityY};
+	const std::vector<float> initialScalarVelocityZ{scalarVelocityZ};
+
 	Timer scalarTimer{};
 
 	for (int i{}; i < repeatCount; ++i) {
@@ -359,6 +477,24 @@ runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, floa
 	}
 
 	const double directThreeComponentMs{directThreeComponentTimer.elapsedMilliseconds()};
+
+	std::vector<float> directXMathPositionX{initialScalarPositionX};
+	std::vector<float> directXMathPositionY{initialScalarPositionY};
+	std::vector<float> directXMathPositionZ{initialScalarPositionZ};
+	std::vector<float> directXMathVelocityX{initialScalarVelocityX};
+	std::vector<float> directXMathVelocityY{initialScalarVelocityY};
+	std::vector<float> directXMathVelocityZ{initialScalarVelocityZ};
+
+	Timer directXMathTimer{};
+
+	for (int i{}; i < repeatCount; ++i) {
+		directXMathThreeComponentUpdate(
+		    directXMathPositionX, directXMathPositionY, directXMathPositionZ,
+		    directXMathVelocityX, directXMathVelocityY, directXMathVelocityZ,
+		    scalarAccelerationX, scalarAccelerationY, scalarAccelerationZ, deltaTime);
+	}
+
+	const double directXMathMs{directXMathTimer.elapsedMilliseconds()};
 
 	ThreeComponentArrays specializedPosition{engine, elementCount};
 	ThreeComponentArrays specializedVelocity{engine, elementCount};
@@ -386,8 +522,10 @@ runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, floa
 	result.deltaTime = deltaTime;
 	result.scalarMs = scalarMs;
 	result.manualSimdMs = directThreeComponentMs;
+	result.directXMathMs = directXMathMs;
 	result.specializedUpdateMs = specializedMs;
 	result.scalarPositionXError = maxAbsError(scalarPositionX, directPosXS);
+	result.directXMathPositionXError = maxAbsError(scalarPositionX, directXMathPositionX);
 	result.specializedPositionXError = maxAbsError(scalarPositionX, specializedPosXS);
 	return result;
 }

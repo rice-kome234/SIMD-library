@@ -10,6 +10,10 @@ target_include_directories(simd_benchmark
 		${PROJECT_SOURCE_DIR}/src
 )
 
+set_target_properties(simd_benchmark PROPERTIES
+	VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:simd_benchmark>"
+)
+
 add_test(NAME simd_benchmark COMMAND simd_benchmark)
 set_tests_properties(simd_benchmark PROPERTIES
 	LABELS benchmark

@@ -19,10 +19,24 @@ cmake --build build-cmake --config Release
 
 Visual Studio のジェネレーターでは、`build-cmake\Release\simd.lib` が生成されます。
 
+## Visual Studioでの実行
+
+Visual Studioでフォルダーを開く場合は、`CMakePresets.json` の `x64 Debug` または `x64 Release` を選べます。
+通常のビルドプリセットは `Build Debug` と `Build Release` です。
+
+F5で実行する場合は、実行対象から `simd_benchmark` または `simd_minimal_example` を選びます。
+配布用ファイルだけを作りたい場合は、ビルドプリセットから `Package simd.h + simd.lib Release` を選びます。
+
 ## ライブラリの生成
 
 公開ヘッダーと静的ライブラリだけを含む、組み込み用の配布パッケージを生成できます。
 アプリケーション側は公開インターフェースを `simd.h` から参照し、実装本体は `simd.lib` としてリンクします。
+
+```powershell
+cmake --build --preset package-release
+```
+
+`build-cmake` を使っている場合は、次のようにターゲットを指定します。
 
 ```powershell
 cmake --build build-cmake --config Release --target simd_dist
@@ -150,5 +164,5 @@ engine.execute();
 ctest --test-dir build-cmake -C Release --output-on-failure -V
 ```
 
-ベンチマーク内では手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではないので、通常の利用側は `simd.h` の `Array`、`Engine`だけで扱うことが可能です。
+ベンチマーク内では、手書きSIMDとDirectXMathとの比較も行っています。手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではないので、通常の利用側は `simd.h` の `Array`、`Engine`だけで扱うことが可能です。
 
