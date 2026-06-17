@@ -9,6 +9,7 @@
 namespace rice::simd
 {
 using internal::Assignment;
+using internal::AssignmentKind;
 using internal::CompileContext;
 using internal::CompileGroup;
 using internal::ExprNode;
@@ -17,6 +18,9 @@ using internal::FusionPlan;
 using internal::KeyIndex;
 using internal::MAX_REGISTERS;
 using internal::NodeKind;
+using internal::PendingStore;
+using internal::PendingStoreKind;
+using internal::PlanCacheKey;
 using internal::SIMD_WIDTH;
 using internal::ValueKind;
 using internal::ValueRef;
@@ -181,7 +185,12 @@ Array::Array(Engine &engine, std::size_t elementCount, float value) : Array{engi
 	assign(elementCount, value);
 }
 
-Array::~Array() noexcept = default;
+Array::~Array() noexcept
+{
+	if (impl_ != nullptr && impl_->variable.engine() != nullptr) {
+		impl_->variable.engine()->impl_->hasCachedPlan = false;
+	}
+}
 Array::Array(Array &&) noexcept = default;
 Array &Array::operator=(Array &&) noexcept = default;
 
@@ -210,29 +219,120 @@ Array &Array::operator=(std::initializer_list<float> values)
 	return *this;
 }
 
-Array &Array::operator+=(const Expression &expr) { return operator=(*this + expr); }
+namespace
+{
+void requireCompoundAssignmentTarget(const Array &target)
+{
+	if (target.elementCount() == 0) {
+		throw std::invalid_argument{"複合代入の左辺配列に要素がありません。resize()"
+		                            "や代入でサイズを設定してください。"};
+	}
+}
+}
 
-Array &Array::operator+=(const Array &value) { return operator=(*this + value); }
+Array &Array::operator+=(const Expression &expr)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	impl_->variable.engine()->deferCompoundAssign(*this, expr, AssignmentKind::AddAssign);
+	return *this;
+}
 
-Array &Array::operator+=(float value) { return operator=(*this + value); }
+Array &Array::operator+=(const Array &value)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	Engine *engine{impl_->variable.engine()};
+	engine->deferCompoundAssign(*this, engine->makeVariable(value), AssignmentKind::AddAssign);
+	return *this;
+}
 
-Array &Array::operator-=(const Expression &expr) { return operator=(*this - expr); }
+Array &Array::operator+=(float value)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	Engine *engine{impl_->variable.engine()};
+	engine->deferCompoundAssign(*this, engine->makeScalar(value), AssignmentKind::AddAssign);
+	return *this;
+}
 
-Array &Array::operator-=(const Array &value) { return operator=(*this - value); }
+Array &Array::operator-=(const Expression &expr)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	impl_->variable.engine()->deferCompoundAssign(*this, expr, AssignmentKind::SubAssign);
+	return *this;
+}
 
-Array &Array::operator-=(float value) { return operator=(*this - value); }
+Array &Array::operator-=(const Array &value)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	Engine *engine{impl_->variable.engine()};
+	engine->deferCompoundAssign(*this, engine->makeVariable(value), AssignmentKind::SubAssign);
+	return *this;
+}
 
-Array &Array::operator*=(const Expression &expr) { return operator=((*this) * expr); }
+Array &Array::operator-=(float value)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	Engine *engine{impl_->variable.engine()};
+	engine->deferCompoundAssign(*this, engine->makeScalar(value), AssignmentKind::SubAssign);
+	return *this;
+}
 
-Array &Array::operator*=(const Array &value) { return operator=((*this) * value); }
+Array &Array::operator*=(const Expression &expr)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	impl_->variable.engine()->deferCompoundAssign(*this, expr, AssignmentKind::MulAssign);
+	return *this;
+}
 
-Array &Array::operator*=(float value) { return operator=((*this) * value); }
+Array &Array::operator*=(const Array &value)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	Engine *engine{impl_->variable.engine()};
+	engine->deferCompoundAssign(*this, engine->makeVariable(value), AssignmentKind::MulAssign);
+	return *this;
+}
 
-Array &Array::operator/=(const Expression &expr) { return operator=(*this / expr); }
+Array &Array::operator*=(float value)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	Engine *engine{impl_->variable.engine()};
+	engine->deferCompoundAssign(*this, engine->makeScalar(value), AssignmentKind::MulAssign);
+	return *this;
+}
 
-Array &Array::operator/=(const Array &value) { return operator=(*this / value); }
+Array &Array::operator/=(const Expression &expr)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	impl_->variable.engine()->deferCompoundAssign(*this, expr, AssignmentKind::DivAssign);
+	return *this;
+}
 
-Array &Array::operator/=(float value) { return operator=(*this / value); }
+Array &Array::operator/=(const Array &value)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	Engine *engine{impl_->variable.engine()};
+	engine->deferCompoundAssign(*this, engine->makeVariable(value), AssignmentKind::DivAssign);
+	return *this;
+}
+
+Array &Array::operator/=(float value)
+{
+	requireCompoundAssignmentTarget(*this);
+	assert(impl_ != nullptr);
+	Engine *engine{impl_->variable.engine()};
+	engine->deferCompoundAssign(*this, engine->makeScalar(value), AssignmentKind::DivAssign);
+	return *this;
+}
 
 void Array::resize(std::size_t elementCount)
 {
@@ -566,6 +666,90 @@ void executeFmaRSA(const internal::FusionPlanData &plan, std::size_t blockIndex,
 	regs[op.dst] = _mm256_fmadd_ps(regs[op.a], op.b, op.c[blockIndex]);
 }
 
+void executeStoreFmaAAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                        std::size_t index) noexcept
+{
+	const internal::StoreFmaAAA &op{plan.storeFmaAAA[index]};
+	op.out[blockIndex] = _mm256_fmadd_ps(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
+}
+
+void executeStoreFmaASA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                        std::size_t index) noexcept
+{
+	const internal::StoreFmaASA &op{plan.storeFmaASA[index]};
+	op.out[blockIndex] = _mm256_fmadd_ps(op.a[blockIndex], op.b, op.c[blockIndex]);
+}
+
+void executeStoreAddAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinaryAA &op{plan.storeAddAA[index]};
+	op.out[blockIndex] = _mm256_add_ps(op.a[blockIndex], op.b[blockIndex]);
+}
+
+void executeStoreAddAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinaryAS &op{plan.storeAddAS[index]};
+	op.out[blockIndex] = _mm256_add_ps(op.a[blockIndex], op.b);
+}
+
+void executeStoreSubAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinaryAA &op{plan.storeSubAA[index]};
+	op.out[blockIndex] = _mm256_sub_ps(op.a[blockIndex], op.b[blockIndex]);
+}
+
+void executeStoreSubAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinaryAS &op{plan.storeSubAS[index]};
+	op.out[blockIndex] = _mm256_sub_ps(op.a[blockIndex], op.b);
+}
+
+void executeStoreSubSA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinarySA &op{plan.storeSubSA[index]};
+	op.out[blockIndex] = _mm256_sub_ps(op.a, op.b[blockIndex]);
+}
+
+void executeStoreMulAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinaryAA &op{plan.storeMulAA[index]};
+	op.out[blockIndex] = _mm256_mul_ps(op.a[blockIndex], op.b[blockIndex]);
+}
+
+void executeStoreMulAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinaryAS &op{plan.storeMulAS[index]};
+	op.out[blockIndex] = _mm256_mul_ps(op.a[blockIndex], op.b);
+}
+
+void executeStoreDivAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinaryAA &op{plan.storeDivAA[index]};
+	op.out[blockIndex] = _mm256_div_ps(op.a[blockIndex], op.b[blockIndex]);
+}
+
+void executeStoreDivAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinaryAS &op{plan.storeDivAS[index]};
+	op.out[blockIndex] = _mm256_div_ps(op.a[blockIndex], op.b);
+}
+
+void executeStoreDivSA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+                       std::size_t index) noexcept
+{
+	const internal::StoreBinarySA &op{plan.storeDivSA[index]};
+	op.out[blockIndex] = _mm256_div_ps(op.a, op.b[blockIndex]);
+}
+
 void executeSetS(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
                  std::size_t index) noexcept
 {
@@ -595,7 +779,7 @@ void executeStoreS(const internal::FusionPlanData &plan, std::size_t blockIndex,
 }
 }
 
-internal::FusionPlan::FusionPlan() : impl_{std::make_shared<internal::FusionPlanData>()} {}
+internal::FusionPlan::FusionPlan() = default;
 
 internal::FusionPlan::~FusionPlan() noexcept = default;
 
@@ -603,34 +787,34 @@ void internal::FusionPlan::execute() const noexcept
 {
 	__m256 regs[MAX_REGISTERS];
 
-	for (std::size_t blockIndex{}; blockIndex < impl_->blockCount; ++blockIndex) {
+	for (std::size_t blockIndex{}; blockIndex < data_.blockCount; ++blockIndex) {
 		executeBlock(blockIndex, regs);
 	}
 }
 
 void internal::FusionPlan::executeBlock(std::size_t blockIndex, __m256 *regs) const noexcept
 {
-	for (const internal::OpRef &ref : impl_->ops) {
+	for (const internal::OpRef &ref : data_.ops) {
 		assert(ref.execute != nullptr);
-		ref.execute(*impl_, blockIndex, regs, ref.index);
+		ref.execute(data_, blockIndex, regs, ref.index);
 	}
 }
 
-std::size_t internal::FusionPlan::instructionCount() const noexcept { return impl_->ops.size(); }
+std::size_t internal::FusionPlan::instructionCount() const noexcept { return data_.ops.size(); }
 
-int internal::FusionPlan::registerCount() const noexcept { return impl_->maxRegisterCount; }
+int internal::FusionPlan::registerCount() const noexcept { return data_.maxRegisterCount; }
 
 int internal::FusionPlan::allocateRegister() noexcept
 {
 	int result{-1};
 
-	if (!impl_->freeRegisters.empty()) {
-		result = impl_->freeRegisters.back();
-		impl_->freeRegisters.pop_back();
+	if (!data_.freeRegisters.empty()) {
+		result = data_.freeRegisters.back();
+		data_.freeRegisters.pop_back();
 	} else {
-		result = impl_->nextRegister;
-		++impl_->nextRegister;
-		impl_->maxRegisterCount = std::max(impl_->maxRegisterCount, impl_->nextRegister);
+		result = data_.nextRegister;
+		++data_.nextRegister;
+		data_.maxRegisterCount = std::max(data_.maxRegisterCount, data_.nextRegister);
 	}
 
 	assert(result < MAX_REGISTERS);
@@ -640,40 +824,40 @@ int internal::FusionPlan::allocateRegister() noexcept
 void internal::FusionPlan::releaseRegister(int reg)
 {
 	if (reg >= 0) {
-		impl_->freeRegisters.push_back(reg);
+		data_.freeRegisters.push_back(reg);
 	}
 }
 
-internal::ScheduledPlan::ScheduledPlan() : impl_{std::make_shared<internal::ScheduledPlanData>()} {}
+internal::ScheduledPlan::ScheduledPlan() = default;
 
 internal::ScheduledPlan::~ScheduledPlan() noexcept = default;
 
 void internal::ScheduledPlan::execute() const noexcept
 {
-	if (impl_->stages.empty())
+	if (data_.stages.empty())
 		return;
 
-	if (impl_->stages.size() == 1) {
-		impl_->stages.front().execute();
+	if (data_.stages.size() == 1) {
+		data_.stages.front().execute();
 		return;
 	}
 
 	__m256 regs[MAX_REGISTERS];
 
-	for (std::size_t blockIndex{}; blockIndex < impl_->blockCount; ++blockIndex) {
-		for (const FusionPlan &stage : impl_->stages) {
+	for (std::size_t blockIndex{}; blockIndex < data_.blockCount; ++blockIndex) {
+		for (const FusionPlan &stage : data_.stages) {
 			stage.executeBlock(blockIndex, regs);
 		}
 	}
 }
 
-std::size_t internal::ScheduledPlan::stageCount() const noexcept { return impl_->stages.size(); }
+std::size_t internal::ScheduledPlan::stageCount() const noexcept { return data_.stages.size(); }
 
 std::size_t internal::ScheduledPlan::instructionCount() const noexcept
 {
 	std::size_t total{};
 
-	for (const FusionPlan &stage : impl_->stages) {
+	for (const FusionPlan &stage : data_.stages) {
 		total += stage.instructionCount();
 	}
 
@@ -684,7 +868,7 @@ int internal::ScheduledPlan::maxRegisterCount() const noexcept
 {
 	int result{};
 
-	for (const FusionPlan &stage : impl_->stages) {
+	for (const FusionPlan &stage : data_.stages) {
 		result = std::max(result, stage.registerCount());
 	}
 
@@ -800,6 +984,38 @@ struct Compiler {
 	{
 		if (engine.impl_->expressionReserveHint < engine.impl_->nodes.size()) {
 			engine.impl_->expressionReserveHint = engine.impl_->nodes.size();
+		}
+	}
+
+	static void reserveAssignmentsFor(Engine &engine, std::size_t additionalCount)
+	{
+		const std::size_t required{engine.impl_->pendingAssignments.size() +
+		                           additionalCount};
+		if (required <= engine.impl_->pendingAssignments.capacity()) {
+			return;
+		}
+
+		std::size_t newCapacity{engine.impl_->pendingAssignments.capacity()};
+		if (newCapacity == 0) {
+			newCapacity = 4;
+		}
+
+		while (newCapacity < required) {
+			newCapacity *= 2;
+		}
+
+		if (newCapacity < engine.impl_->assignmentReserveHint) {
+			newCapacity = engine.impl_->assignmentReserveHint;
+		}
+
+		engine.impl_->pendingAssignments.reserve(newCapacity);
+	}
+
+	static void rememberAssignmentReserve(Engine &engine) noexcept
+	{
+		if (engine.impl_->assignmentReserveHint < engine.impl_->pendingAssignments.size()) {
+			engine.impl_->assignmentReserveHint =
+			    engine.impl_->pendingAssignments.size();
 		}
 	}
 
@@ -926,6 +1142,71 @@ struct Compiler {
 			collectReads(engine, n.rhs, reads);
 	}
 
+	static bool isCompoundAssignment(AssignmentKind kind) noexcept
+	{
+		return kind != AssignmentKind::Assign;
+	}
+
+	static std::uint64_t assignmentKindCode(AssignmentKind kind) noexcept
+	{
+		if (kind == AssignmentKind::Assign) {
+			return 1;
+		}
+
+		if (kind == AssignmentKind::AddAssign) {
+			return 2;
+		}
+
+		if (kind == AssignmentKind::SubAssign) {
+			return 3;
+		}
+
+		if (kind == AssignmentKind::MulAssign) {
+			return 4;
+		}
+
+		return 5;
+	}
+
+	static NodeKind compoundNodeKind(AssignmentKind kind) noexcept
+	{
+		if (kind == AssignmentKind::AddAssign) {
+			return NodeKind::Add;
+		}
+
+		if (kind == AssignmentKind::SubAssign) {
+			return NodeKind::Sub;
+		}
+
+		if (kind == AssignmentKind::MulAssign) {
+			return NodeKind::Mul;
+		}
+
+		return NodeKind::Div;
+	}
+
+	static void collectAssignmentReads(const Engine &engine, const Assignment &assignment,
+	                                   std::vector<const FloatArray *> &reads)
+	{
+		if (isCompoundAssignment(assignment.kind)) {
+			appendUniqueArray(reads, &assignment.out_->variable.array());
+		}
+
+		collectReads(engine, assignment.expr_.nodeId(), reads);
+	}
+
+	static void appendCacheArray(std::uint64_t &hash, const FloatArray &array) noexcept
+	{
+		hash = combineHash(hash, reinterpret_cast<std::uintptr_t>(&array),
+		                   reinterpret_cast<std::uintptr_t>(array.data()));
+		hash = combineHash(hash, array.elementCount(), array.blockCount());
+	}
+
+	static bool samePlanCacheKey(const PlanCacheKey &lhs, const PlanCacheKey &rhs) noexcept
+	{
+		return lhs.hash == rhs.hash && lhs.assignmentCount == rhs.assignmentCount;
+	}
+
 	static const FloatArray *findFirstRead(const Engine &engine, std::size_t nodeId) noexcept
 	{
 		const ExprNode &n{engine.impl_->nodes[nodeId]};
@@ -962,18 +1243,24 @@ struct Compiler {
 		}
 	}
 
-	static std::vector<std::vector<Assignment>>
-	buildStages(const Engine &engine, const std::vector<Assignment> &assignments)
+	static const std::vector<internal::AssignmentRange> &
+	buildStages(Engine &engine, const std::vector<Assignment> &assignments)
 	{
-		std::vector<std::vector<Assignment>> stages{};
-		std::vector<Assignment> currentStage{};
-		std::vector<const FloatArray *> currentWrites{};
-		std::vector<const FloatArray *> reads{};
-		reads.reserve(8);
+		std::vector<internal::AssignmentRange> &ranges{engine.impl_->stageRanges};
+		std::vector<const FloatArray *> &currentWrites{engine.impl_->writeScratch};
+		std::vector<const FloatArray *> &reads{engine.impl_->readScratch};
 
-		for (const Assignment &assignment : assignments) {
+		ranges.clear();
+		currentWrites.clear();
+		reads.clear();
+		reads.reserve(8);
+		ranges.reserve(assignments.size());
+
+		std::size_t stageBegin{};
+		for (std::size_t i{}; i < assignments.size(); ++i) {
+			const Assignment &assignment{assignments[i]};
 			reads.clear();
-			collectReads(engine, assignment.expr_.nodeId(), reads);
+			collectAssignmentReads(engine, assignment, reads);
 
 			const FloatArray *write{&assignment.out_->variable.array()};
 			bool newStage{containsArray(currentWrites, write)};
@@ -985,28 +1272,32 @@ struct Compiler {
 				}
 			}
 
-			if (newStage && !currentStage.empty()) {
-				stages.push_back(currentStage);
-				currentStage.clear();
+			if (newStage && stageBegin < i) {
+				ranges.push_back(internal::AssignmentRange{stageBegin, i});
 				currentWrites.clear();
+				stageBegin = i;
 			}
 
-			currentStage.push_back(assignment);
 			appendUniqueArray(currentWrites, write);
 		}
 
-		if (!currentStage.empty()) {
-			stages.push_back(currentStage);
+		if (stageBegin < assignments.size()) {
+			ranges.push_back(internal::AssignmentRange{stageBegin, assignments.size()});
 		}
 
-		return stages;
+		return ranges;
 	}
 
-	static void validateAssignments(const Engine &engine,
-	                                const std::vector<Assignment> &assignments)
+	static PlanCacheKey
+	validateAssignmentsAndBuildCacheKey(Engine &engine,
+	                                    const std::vector<Assignment> &assignments)
 	{
+		PlanCacheKey key{};
+		key.assignmentCount = assignments.size();
+		key.hash = combineHash(0x706c616e, assignments.size(), 0);
+
 		if (assignments.empty()) {
-			return;
+			return key;
 		}
 
 		if (assignments.front().out_ == nullptr) {
@@ -1016,7 +1307,8 @@ struct Compiler {
 		requireVarOwner(engine, assignments.front().out_->variable,
 		                "代入先が別のEngineに紐づいています。");
 		const FloatArray &expected{assignments.front().out_->variable.array()};
-		std::vector<const FloatArray *> reads{};
+		std::vector<const FloatArray *> &reads{engine.impl_->readScratch};
+		reads.clear();
 		reads.reserve(8);
 
 		for (const Assignment &assignment : assignments) {
@@ -1031,27 +1323,38 @@ struct Compiler {
 			requireSameShape(expected, assignment.out_->variable.array(),
 			                 "代入先配列の要素数が一致しません。");
 
+			const FloatArray &output{assignment.out_->variable.array()};
+			const ExprNode &root{engine.impl_->nodes[assignment.expr_.nodeId()]};
+			appendCacheArray(key.hash, output);
+			key.hash =
+			    combineHash(key.hash, root.key, assignmentKindCode(assignment.kind));
+
 			reads.clear();
-			collectReads(engine, assignment.expr_.nodeId(), reads);
+			collectAssignmentReads(engine, assignment, reads);
 
 			for (const FloatArray *read : reads) {
 				requireSameShape(expected, *read,
 				                 "式に含まれる配列の要素数が一致しません。");
+				appendCacheArray(key.hash, *read);
 			}
 		}
+
+		return key;
 	}
 
-	static CompileContext makeCompileContext(const Engine &engine)
+	static CompileContext &makeCompileContext(Engine &engine)
 	{
-		CompileContext context{};
+		CompileContext &context{engine.impl_->compileContext};
 		const std::vector<ExprNode> &nodes{engine.impl_->nodes};
 
 		context.groupByNode.assign(nodes.size(), INVALID_NODE);
+		context.groups.clear();
 		if (nodes.empty()) {
 			return context;
 		}
 
-		std::vector<KeyIndex> keys{};
+		std::vector<KeyIndex> &keys{engine.impl_->keyScratch};
+		keys.clear();
 		keys.reserve(nodes.size());
 		context.groups.reserve(nodes.size());
 
@@ -1277,147 +1580,545 @@ struct Compiler {
 	{
 		const std::size_t index{bucket.size()};
 		bucket.push_back(op);
-		plan.impl_->ops.push_back(internal::OpRef{execute, index});
+		plan.data_.ops.push_back(internal::OpRef{execute, index});
+	}
+
+	static bool findFmaParts(const Engine &engine, std::size_t nodeId, std::size_t &mulId,
+	                         std::size_t &addId) noexcept
+	{
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		if (node.kind != NodeKind::Add) {
+			return false;
+		}
+
+		if (engine.impl_->nodes[node.lhs].kind == NodeKind::Mul) {
+			mulId = node.lhs;
+			addId = node.rhs;
+			return true;
+		}
+
+		if (engine.impl_->nodes[node.rhs].kind == NodeKind::Mul) {
+			mulId = node.rhs;
+			addId = node.lhs;
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool makeDirectFmaStore(const Engine &engine, __m256 *out, std::size_t nodeId,
+	                               PendingStore &store) noexcept
+	{
+		std::size_t mulId{INVALID_NODE};
+		std::size_t addId{INVALID_NODE};
+		if (!findFmaParts(engine, nodeId, mulId, addId)) {
+			return false;
+		}
+
+		const ExprNode &add{engine.impl_->nodes[addId]};
+		if (add.kind != NodeKind::Variable) {
+			return false;
+		}
+
+		const ExprNode &mul{engine.impl_->nodes[mulId]};
+		const ExprNode &lhs{engine.impl_->nodes[mul.lhs]};
+		const ExprNode &rhs{engine.impl_->nodes[mul.rhs]};
+
+		store = PendingStore{};
+		store.out = out;
+		store.c = add.array->data();
+
+		if (lhs.kind == NodeKind::Variable && rhs.kind == NodeKind::Variable) {
+			store.kind = PendingStoreKind::FmaAAA;
+			store.a = lhs.array->data();
+			store.bArray = rhs.array->data();
+			return true;
+		}
+
+		if (lhs.kind == NodeKind::Variable && rhs.kind == NodeKind::Scalar) {
+			store.kind = PendingStoreKind::FmaASA;
+			store.a = lhs.array->data();
+			store.bScalar = _mm256_set1_ps(rhs.scalar);
+			return true;
+		}
+
+		if (lhs.kind == NodeKind::Scalar && rhs.kind == NodeKind::Variable) {
+			store.kind = PendingStoreKind::FmaASA;
+			store.a = rhs.array->data();
+			store.bScalar = _mm256_set1_ps(lhs.scalar);
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool makeDirectBinaryStore(const Engine &engine, __m256 *out, std::size_t nodeId,
+	                                  PendingStore &store) noexcept
+	{
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		if (node.kind == NodeKind::Variable || node.kind == NodeKind::Scalar) {
+			return false;
+		}
+
+		const ExprNode &lhs{engine.impl_->nodes[node.lhs]};
+		const ExprNode &rhs{engine.impl_->nodes[node.rhs]};
+		const bool lhsArray{lhs.kind == NodeKind::Variable};
+		const bool rhsArray{rhs.kind == NodeKind::Variable};
+		const bool lhsScalar{lhs.kind == NodeKind::Scalar};
+		const bool rhsScalar{rhs.kind == NodeKind::Scalar};
+
+		if ((!lhsArray && !lhsScalar) || (!rhsArray && !rhsScalar)) {
+			return false;
+		}
+
+		store = PendingStore{};
+		store.out = out;
+
+		if (node.kind == NodeKind::Add) {
+			if (lhsArray && rhsArray) {
+				store.kind = PendingStoreKind::AddAA;
+				store.a = lhs.array->data();
+				store.bArray = rhs.array->data();
+				return true;
+			}
+
+			if (lhsArray && rhsScalar) {
+				store.kind = PendingStoreKind::AddAS;
+				store.a = lhs.array->data();
+				store.bScalar = _mm256_set1_ps(rhs.scalar);
+				return true;
+			}
+
+			if (lhsScalar && rhsArray) {
+				store.kind = PendingStoreKind::AddAS;
+				store.a = rhs.array->data();
+				store.bScalar = _mm256_set1_ps(lhs.scalar);
+				return true;
+			}
+		}
+
+		if (node.kind == NodeKind::Sub) {
+			if (lhsArray && rhsArray) {
+				store.kind = PendingStoreKind::SubAA;
+				store.a = lhs.array->data();
+				store.bArray = rhs.array->data();
+				return true;
+			}
+
+			if (lhsArray && rhsScalar) {
+				store.kind = PendingStoreKind::SubAS;
+				store.a = lhs.array->data();
+				store.bScalar = _mm256_set1_ps(rhs.scalar);
+				return true;
+			}
+
+			if (lhsScalar && rhsArray) {
+				store.kind = PendingStoreKind::SubSA;
+				store.bScalar = _mm256_set1_ps(lhs.scalar);
+				store.bArray = rhs.array->data();
+				return true;
+			}
+		}
+
+		if (node.kind == NodeKind::Mul) {
+			if (lhsArray && rhsArray) {
+				store.kind = PendingStoreKind::MulAA;
+				store.a = lhs.array->data();
+				store.bArray = rhs.array->data();
+				return true;
+			}
+
+			if (lhsArray && rhsScalar) {
+				store.kind = PendingStoreKind::MulAS;
+				store.a = lhs.array->data();
+				store.bScalar = _mm256_set1_ps(rhs.scalar);
+				return true;
+			}
+
+			if (lhsScalar && rhsArray) {
+				store.kind = PendingStoreKind::MulAS;
+				store.a = rhs.array->data();
+				store.bScalar = _mm256_set1_ps(lhs.scalar);
+				return true;
+			}
+		}
+
+		if (node.kind == NodeKind::Div) {
+			if (lhsArray && rhsArray) {
+				store.kind = PendingStoreKind::DivAA;
+				store.a = lhs.array->data();
+				store.bArray = rhs.array->data();
+				return true;
+			}
+
+			if (lhsArray && rhsScalar) {
+				store.kind = PendingStoreKind::DivAS;
+				store.a = lhs.array->data();
+				store.bScalar = _mm256_set1_ps(rhs.scalar);
+				return true;
+			}
+
+			if (lhsScalar && rhsArray) {
+				store.kind = PendingStoreKind::DivSA;
+				store.bScalar = _mm256_set1_ps(lhs.scalar);
+				store.bArray = rhs.array->data();
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	static bool makeDirectStore(const Engine &engine, __m256 *out, std::size_t nodeId,
+	                            PendingStore &store) noexcept
+	{
+		if (makeDirectFmaStore(engine, out, nodeId, store)) {
+			return true;
+		}
+
+		return makeDirectBinaryStore(engine, out, nodeId, store);
+	}
+
+	static bool makeDirectAddAssignFmaStore(const Engine &engine, __m256 *out,
+	                                        const FloatArray &outputArray, std::size_t nodeId,
+	                                        PendingStore &store) noexcept
+	{
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		if (node.kind != NodeKind::Mul) {
+			return false;
+		}
+
+		const ExprNode &lhs{engine.impl_->nodes[node.lhs]};
+		const ExprNode &rhs{engine.impl_->nodes[node.rhs]};
+
+		store = PendingStore{};
+		store.out = out;
+		store.c = outputArray.data();
+
+		if (lhs.kind == NodeKind::Variable && rhs.kind == NodeKind::Variable) {
+			store.kind = PendingStoreKind::FmaAAA;
+			store.a = lhs.array->data();
+			store.bArray = rhs.array->data();
+			return true;
+		}
+
+		if (lhs.kind == NodeKind::Variable && rhs.kind == NodeKind::Scalar) {
+			store.kind = PendingStoreKind::FmaASA;
+			store.a = lhs.array->data();
+			store.bScalar = _mm256_set1_ps(rhs.scalar);
+			return true;
+		}
+
+		if (lhs.kind == NodeKind::Scalar && rhs.kind == NodeKind::Variable) {
+			store.kind = PendingStoreKind::FmaASA;
+			store.a = rhs.array->data();
+			store.bScalar = _mm256_set1_ps(lhs.scalar);
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool makeDirectCompoundBinaryStore(const Engine &engine, __m256 *out,
+	                                          const FloatArray &outputArray,
+	                                          const Assignment &assignment,
+	                                          PendingStore &store) noexcept
+	{
+		const ExprNode &rhs{engine.impl_->nodes[assignment.expr_.nodeId()]};
+		const bool rhsArray{rhs.kind == NodeKind::Variable};
+		const bool rhsScalar{rhs.kind == NodeKind::Scalar};
+
+		if (!rhsArray && !rhsScalar) {
+			return false;
+		}
+
+		store = PendingStore{};
+		store.out = out;
+		store.a = outputArray.data();
+
+		if (rhsArray) {
+			store.bArray = rhs.array->data();
+		} else {
+			store.bScalar = _mm256_set1_ps(rhs.scalar);
+		}
+
+		if (assignment.kind == AssignmentKind::AddAssign) {
+			if (rhsArray) {
+				store.kind = PendingStoreKind::AddAA;
+			} else {
+				store.kind = PendingStoreKind::AddAS;
+			}
+			return true;
+		}
+
+		if (assignment.kind == AssignmentKind::SubAssign) {
+			if (rhsArray) {
+				store.kind = PendingStoreKind::SubAA;
+			} else {
+				store.kind = PendingStoreKind::SubAS;
+			}
+			return true;
+		}
+
+		if (assignment.kind == AssignmentKind::MulAssign) {
+			if (rhsArray) {
+				store.kind = PendingStoreKind::MulAA;
+			} else {
+				store.kind = PendingStoreKind::MulAS;
+			}
+			return true;
+		}
+
+		if (assignment.kind == AssignmentKind::DivAssign) {
+			if (rhsArray) {
+				store.kind = PendingStoreKind::DivAA;
+			} else {
+				store.kind = PendingStoreKind::DivAS;
+			}
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool makeDirectAssignmentStore(const Engine &engine, const Assignment &assignment,
+	                                      PendingStore &store) noexcept
+	{
+		FloatArray &outputArray{assignment.out_->variable.array()};
+		__m256 *out{outputArray.data()};
+
+		if (assignment.kind == AssignmentKind::Assign) {
+			return makeDirectStore(engine, out, assignment.expr_.nodeId(), store);
+		}
+
+		if (assignment.kind == AssignmentKind::AddAssign &&
+		    makeDirectAddAssignFmaStore(engine, out, outputArray, assignment.expr_.nodeId(),
+		                                store)) {
+			return true;
+		}
+
+		return makeDirectCompoundBinaryStore(engine, out, outputArray, assignment, store);
 	}
 
 	static void emitStore(FusionPlan &plan, __m256 *out, const ValueRef &value,
 	                      CompileContext &context)
 	{
 		if (value.kind == ValueKind::Reg) {
-			appendOp(plan, plan.impl_->storeR, executeStoreR,
+			appendOp(plan, plan.data_.storeR, executeStoreR,
 			         internal::StoreR{out, value.reg});
 		} else if (value.kind == ValueKind::Array) {
-			appendOp(plan, plan.impl_->storeA, executeStoreA,
+			appendOp(plan, plan.data_.storeA, executeStoreA,
 			         internal::StoreA{out, value.array});
 		} else {
-			appendOp(plan, plan.impl_->storeS, executeStoreS,
+			appendOp(plan, plan.data_.storeS, executeStoreS,
 			         internal::StoreS{out, value.scalar});
 		}
 
 		releaseIfLastUse(plan, value, context);
+		if (value.kind == ValueKind::Reg && !value.hasGroup) {
+			plan.releaseRegister(value.reg);
+		}
+	}
+
+	static void emitPendingStore(FusionPlan &plan, const PendingStore &store,
+	                             CompileContext &context)
+	{
+		if (store.kind == PendingStoreKind::FmaAAA) {
+			appendOp(plan, plan.data_.storeFmaAAA, executeStoreFmaAAA,
+			         internal::StoreFmaAAA{store.out, store.a, store.bArray, store.c});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::FmaASA) {
+			appendOp(plan, plan.data_.storeFmaASA, executeStoreFmaASA,
+			         internal::StoreFmaASA{store.out, store.a, store.bScalar, store.c});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::AddAA) {
+			appendOp(plan, plan.data_.storeAddAA, executeStoreAddAA,
+			         internal::StoreBinaryAA{store.out, store.a, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::AddAS) {
+			appendOp(plan, plan.data_.storeAddAS, executeStoreAddAS,
+			         internal::StoreBinaryAS{store.out, store.a, store.bScalar});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::SubAA) {
+			appendOp(plan, plan.data_.storeSubAA, executeStoreSubAA,
+			         internal::StoreBinaryAA{store.out, store.a, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::SubAS) {
+			appendOp(plan, plan.data_.storeSubAS, executeStoreSubAS,
+			         internal::StoreBinaryAS{store.out, store.a, store.bScalar});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::SubSA) {
+			appendOp(plan, plan.data_.storeSubSA, executeStoreSubSA,
+			         internal::StoreBinarySA{store.out, store.bScalar, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::MulAA) {
+			appendOp(plan, plan.data_.storeMulAA, executeStoreMulAA,
+			         internal::StoreBinaryAA{store.out, store.a, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::MulAS) {
+			appendOp(plan, plan.data_.storeMulAS, executeStoreMulAS,
+			         internal::StoreBinaryAS{store.out, store.a, store.bScalar});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::DivAA) {
+			appendOp(plan, plan.data_.storeDivAA, executeStoreDivAA,
+			         internal::StoreBinaryAA{store.out, store.a, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::DivAS) {
+			appendOp(plan, plan.data_.storeDivAS, executeStoreDivAS,
+			         internal::StoreBinaryAS{store.out, store.a, store.bScalar});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::DivSA) {
+			appendOp(plan, plan.data_.storeDivSA, executeStoreDivSA,
+			         internal::StoreBinarySA{store.out, store.bScalar, store.bArray});
+			return;
+		}
+
+		emitStore(plan, store.out, store.value, context);
 	}
 
 	static void emitAdd(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
 	{
 		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->addRR, executeAddRR,
+			appendOp(plan, plan.data_.addRR, executeAddRR,
 			         internal::AddRR{dst, a.reg, b.reg});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->addRA, executeAddRA,
+			appendOp(plan, plan.data_.addRA, executeAddRA,
 			         internal::AddRA{dst, a.reg, b.array});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->addAR, executeAddAR,
+			appendOp(plan, plan.data_.addAR, executeAddAR,
 			         internal::AddAR{dst, a.array, b.reg});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->addAA, executeAddAA,
+			appendOp(plan, plan.data_.addAA, executeAddAA,
 			         internal::AddAA{dst, a.array, b.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->addRS, executeAddRS,
+			appendOp(plan, plan.data_.addRS, executeAddRS,
 			         internal::AddRS{dst, a.reg, b.scalar});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->addAS, executeAddAS,
+			appendOp(plan, plan.data_.addAS, executeAddAS,
 			         internal::AddAS{dst, a.array, b.scalar});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->addRS, executeAddRS,
+			appendOp(plan, plan.data_.addRS, executeAddRS,
 			         internal::AddRS{dst, b.reg, a.scalar});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->addAS, executeAddAS,
+			appendOp(plan, plan.data_.addAS, executeAddAS,
 			         internal::AddAS{dst, b.array, a.scalar});
 		else
-			appendOp(plan, plan.impl_->setS, executeSetS,
+			appendOp(plan, plan.data_.setS, executeSetS,
 			         internal::SetS{dst, _mm256_add_ps(a.scalar, b.scalar)});
 	}
 
 	static void emitSub(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
 	{
 		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->subRR, executeSubRR,
+			appendOp(plan, plan.data_.subRR, executeSubRR,
 			         internal::SubRR{dst, a.reg, b.reg});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->subRA, executeSubRA,
+			appendOp(plan, plan.data_.subRA, executeSubRA,
 			         internal::SubRA{dst, a.reg, b.array});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->subAR, executeSubAR,
+			appendOp(plan, plan.data_.subAR, executeSubAR,
 			         internal::SubAR{dst, a.array, b.reg});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->subAA, executeSubAA,
+			appendOp(plan, plan.data_.subAA, executeSubAA,
 			         internal::SubAA{dst, a.array, b.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->subRS, executeSubRS,
+			appendOp(plan, plan.data_.subRS, executeSubRS,
 			         internal::SubRS{dst, a.reg, b.scalar});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->subAS, executeSubAS,
+			appendOp(plan, plan.data_.subAS, executeSubAS,
 			         internal::SubAS{dst, a.array, b.scalar});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->subSR, executeSubSR,
+			appendOp(plan, plan.data_.subSR, executeSubSR,
 			         internal::SubSR{dst, a.scalar, b.reg});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->subSA, executeSubSA,
+			appendOp(plan, plan.data_.subSA, executeSubSA,
 			         internal::SubSA{dst, a.scalar, b.array});
 		else
-			appendOp(plan, plan.impl_->setS, executeSetS,
+			appendOp(plan, plan.data_.setS, executeSetS,
 			         internal::SetS{dst, _mm256_sub_ps(a.scalar, b.scalar)});
 	}
 
 	static void emitMul(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
 	{
 		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->mulRR, executeMulRR,
+			appendOp(plan, plan.data_.mulRR, executeMulRR,
 			         internal::MulRR{dst, a.reg, b.reg});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->mulRA, executeMulRA,
+			appendOp(plan, plan.data_.mulRA, executeMulRA,
 			         internal::MulRA{dst, a.reg, b.array});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->mulAR, executeMulAR,
+			appendOp(plan, plan.data_.mulAR, executeMulAR,
 			         internal::MulAR{dst, a.array, b.reg});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->mulAA, executeMulAA,
+			appendOp(plan, plan.data_.mulAA, executeMulAA,
 			         internal::MulAA{dst, a.array, b.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->mulRS, executeMulRS,
+			appendOp(plan, plan.data_.mulRS, executeMulRS,
 			         internal::MulRS{dst, a.reg, b.scalar});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->mulAS, executeMulAS,
+			appendOp(plan, plan.data_.mulAS, executeMulAS,
 			         internal::MulAS{dst, a.array, b.scalar});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->mulRS, executeMulRS,
+			appendOp(plan, plan.data_.mulRS, executeMulRS,
 			         internal::MulRS{dst, b.reg, a.scalar});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->mulAS, executeMulAS,
+			appendOp(plan, plan.data_.mulAS, executeMulAS,
 			         internal::MulAS{dst, b.array, a.scalar});
 		else
-			appendOp(plan, plan.impl_->setS, executeSetS,
+			appendOp(plan, plan.data_.setS, executeSetS,
 			         internal::SetS{dst, _mm256_mul_ps(a.scalar, b.scalar)});
 	}
 
 	static void emitDiv(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
 	{
 		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->divRR, executeDivRR,
+			appendOp(plan, plan.data_.divRR, executeDivRR,
 			         internal::DivRR{dst, a.reg, b.reg});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->divRA, executeDivRA,
+			appendOp(plan, plan.data_.divRA, executeDivRA,
 			         internal::DivRA{dst, a.reg, b.array});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->divAR, executeDivAR,
+			appendOp(plan, plan.data_.divAR, executeDivAR,
 			         internal::DivAR{dst, a.array, b.reg});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->divAA, executeDivAA,
+			appendOp(plan, plan.data_.divAA, executeDivAA,
 			         internal::DivAA{dst, a.array, b.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->divRS, executeDivRS,
+			appendOp(plan, plan.data_.divRS, executeDivRS,
 			         internal::DivRS{dst, a.reg, b.scalar});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->divAS, executeDivAS,
+			appendOp(plan, plan.data_.divAS, executeDivAS,
 			         internal::DivAS{dst, a.array, b.scalar});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->divSR, executeDivSR,
+			appendOp(plan, plan.data_.divSR, executeDivSR,
 			         internal::DivSR{dst, a.scalar, b.reg});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->divSA, executeDivSA,
+			appendOp(plan, plan.data_.divSA, executeDivSA,
 			         internal::DivSA{dst, a.scalar, b.array});
 		else
-			appendOp(plan, plan.impl_->setS, executeSetS,
+			appendOp(plan, plan.data_.setS, executeSetS,
 			         internal::SetS{dst, _mm256_div_ps(a.scalar, b.scalar)});
 	}
 
@@ -1426,35 +2127,35 @@ struct Compiler {
 	{
 		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg &&
 		    c.kind == ValueKind::Reg)
-			appendOp(plan, plan.impl_->fmaRRR, executeFmaRRR,
+			appendOp(plan, plan.data_.fmaRRR, executeFmaRRR,
 			         internal::FmaRRR{dst, a.reg, b.reg, c.reg});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg &&
 		         c.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->fmaRRA, executeFmaRRA,
+			appendOp(plan, plan.data_.fmaRRA, executeFmaRRA,
 			         internal::FmaRRA{dst, a.reg, b.reg, c.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array &&
 		         c.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->fmaRAA, executeFmaRAA,
+			appendOp(plan, plan.data_.fmaRAA, executeFmaRAA,
 			         internal::FmaRAA{dst, a.reg, b.array, c.array});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Array &&
 		         c.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->fmaAAA, executeFmaAAA,
+			appendOp(plan, plan.data_.fmaAAA, executeFmaAAA,
 			         internal::FmaAAA{dst, a.array, b.array, c.array});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar &&
 		         c.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->fmaASA, executeFmaASA,
+			appendOp(plan, plan.data_.fmaASA, executeFmaASA,
 			         internal::FmaASA{dst, a.array, b.scalar, c.array});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array &&
 		         c.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->fmaASA, executeFmaASA,
+			appendOp(plan, plan.data_.fmaASA, executeFmaASA,
 			         internal::FmaASA{dst, b.array, a.scalar, c.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array &&
 		         c.kind == ValueKind::Scalar)
-			appendOp(plan, plan.impl_->fmaRAS, executeFmaRAS,
+			appendOp(plan, plan.data_.fmaRAS, executeFmaRAS,
 			         internal::FmaRAS{dst, a.reg, b.array, c.scalar});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar &&
 		         c.kind == ValueKind::Array)
-			appendOp(plan, plan.impl_->fmaRSA, executeFmaRSA,
+			appendOp(plan, plan.data_.fmaRSA, executeFmaRSA,
 			         internal::FmaRSA{dst, a.reg, b.scalar, c.array});
 		else {
 			const int temp{plan.allocateRegister()};
@@ -1467,56 +2168,340 @@ struct Compiler {
 		}
 	}
 
-	static FusionPlan compileFusion(const Engine &engine,
-	                                const std::vector<Assignment> &assignments)
+	static ValueRef makeTemporaryRegValue(int reg) noexcept
 	{
-		assert(!assignments.empty());
+		ValueRef value{};
+		value.kind = ValueKind::Reg;
+		value.reg = reg;
+		return value;
+	}
 
-		FusionPlan plan{};
-		plan.impl_->blockCount = assignments.front().out_->variable.array().blockCount();
-		plan.impl_->ops.reserve(assignments.size() * 8);
+	static ValueRef makeOutputArrayValue(const Assignment &assignment) noexcept
+	{
+		ValueRef value{};
+		value.kind = ValueKind::Array;
+		value.array = assignment.out_->variable.array().data();
+		return value;
+	}
 
-		CompileContext context{makeCompileContext(engine)};
+	static ValueRef compileAssignmentValue(const Engine &engine, FusionPlan &plan,
+	                                       const Assignment &assignment,
+	                                       CompileContext &context)
+	{
+		if (assignment.kind == AssignmentKind::Assign) {
+			return compileNode(engine, plan, assignment.expr_.nodeId(), context);
+		}
 
-		for (const Assignment &assignment : assignments) {
+		const ValueRef lhs{makeOutputArrayValue(assignment)};
+		const ValueRef rhs{compileNode(engine, plan, assignment.expr_.nodeId(), context)};
+		const int dst{plan.allocateRegister()};
+		const NodeKind operation{compoundNodeKind(assignment.kind)};
+
+		if (operation == NodeKind::Add) {
+			emitAdd(plan, dst, lhs, rhs);
+		} else if (operation == NodeKind::Sub) {
+			emitSub(plan, dst, lhs, rhs);
+		} else if (operation == NodeKind::Mul) {
+			emitMul(plan, dst, lhs, rhs);
+		} else {
+			emitDiv(plan, dst, lhs, rhs);
+		}
+
+		releaseIfLastUse(plan, rhs, context);
+		return makeTemporaryRegValue(dst);
+	}
+
+	struct PlanReserveEstimate {
+		std::size_t instructionCount{};
+		std::size_t storeR{};
+		std::size_t storeA{};
+		std::size_t storeS{};
+		std::size_t storeFmaAAA{};
+		std::size_t storeFmaASA{};
+		std::size_t storeAddAA{};
+		std::size_t storeAddAS{};
+		std::size_t storeSubAA{};
+		std::size_t storeSubAS{};
+		std::size_t storeSubSA{};
+		std::size_t storeMulAA{};
+		std::size_t storeMulAS{};
+		std::size_t storeDivAA{};
+		std::size_t storeDivAS{};
+		std::size_t storeDivSA{};
+	};
+
+	static std::size_t estimateNodeInstructionCount(const Engine &engine,
+	                                                std::size_t nodeId) noexcept
+	{
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		if (node.kind == NodeKind::Variable || node.kind == NodeKind::Scalar) {
+			return 0;
+		}
+
+		std::size_t mulId{INVALID_NODE};
+		std::size_t addId{INVALID_NODE};
+		if (findFmaParts(engine, nodeId, mulId, addId)) {
+			const ExprNode &mul{engine.impl_->nodes[mulId]};
+			return 1 + estimateNodeInstructionCount(engine, mul.lhs) +
+			       estimateNodeInstructionCount(engine, mul.rhs) +
+			       estimateNodeInstructionCount(engine, addId);
+		}
+
+		return 1 + estimateNodeInstructionCount(engine, node.lhs) +
+		       estimateNodeInstructionCount(engine, node.rhs);
+	}
+
+	static std::size_t assignmentCount(internal::AssignmentRange range) noexcept
+	{
+		return range.end - range.begin;
+	}
+
+	static void countDirectStoreReserve(PlanReserveEstimate &estimate,
+	                                    PendingStoreKind kind) noexcept
+	{
+		++estimate.instructionCount;
+
+		if (kind == PendingStoreKind::FmaAAA) {
+			++estimate.storeFmaAAA;
+		} else if (kind == PendingStoreKind::FmaASA) {
+			++estimate.storeFmaASA;
+		} else if (kind == PendingStoreKind::AddAA) {
+			++estimate.storeAddAA;
+		} else if (kind == PendingStoreKind::AddAS) {
+			++estimate.storeAddAS;
+		} else if (kind == PendingStoreKind::SubAA) {
+			++estimate.storeSubAA;
+		} else if (kind == PendingStoreKind::SubAS) {
+			++estimate.storeSubAS;
+		} else if (kind == PendingStoreKind::SubSA) {
+			++estimate.storeSubSA;
+		} else if (kind == PendingStoreKind::MulAA) {
+			++estimate.storeMulAA;
+		} else if (kind == PendingStoreKind::MulAS) {
+			++estimate.storeMulAS;
+		} else if (kind == PendingStoreKind::DivAA) {
+			++estimate.storeDivAA;
+		} else if (kind == PendingStoreKind::DivAS) {
+			++estimate.storeDivAS;
+		} else if (kind == PendingStoreKind::DivSA) {
+			++estimate.storeDivSA;
+		}
+	}
+
+	static PlanReserveEstimate estimatePlanReserve(const Engine &engine,
+	                                               const std::vector<Assignment> &assignments,
+	                                               internal::AssignmentRange range) noexcept
+	{
+		PlanReserveEstimate estimate{};
+
+		for (std::size_t i{range.begin}; i < range.end; ++i) {
+			const Assignment &assignment{assignments[i]};
+			PendingStore store{};
+			if (makeDirectAssignmentStore(engine, assignment, store)) {
+				countDirectStoreReserve(estimate, store.kind);
+				continue;
+			}
+
+			const ExprNode &root{engine.impl_->nodes[assignment.expr_.nodeId()]};
+			estimate.instructionCount +=
+			    estimateNodeInstructionCount(engine, assignment.expr_.nodeId()) + 1;
+
+			if (isCompoundAssignment(assignment.kind)) {
+				++estimate.instructionCount;
+				++estimate.storeR;
+			} else if (root.kind == NodeKind::Variable) {
+				++estimate.storeA;
+			} else if (root.kind == NodeKind::Scalar) {
+				++estimate.storeS;
+			} else {
+				++estimate.storeR;
+			}
+		}
+
+		return estimate;
+	}
+
+	static void reservePlanStorage(FusionPlan &plan, const PlanReserveEstimate &estimate)
+	{
+		plan.data_.ops.reserve(estimate.instructionCount);
+		plan.data_.storeR.reserve(estimate.storeR);
+		plan.data_.storeA.reserve(estimate.storeA);
+		plan.data_.storeS.reserve(estimate.storeS);
+		plan.data_.storeFmaAAA.reserve(estimate.storeFmaAAA);
+		plan.data_.storeFmaASA.reserve(estimate.storeFmaASA);
+		plan.data_.storeAddAA.reserve(estimate.storeAddAA);
+		plan.data_.storeAddAS.reserve(estimate.storeAddAS);
+		plan.data_.storeSubAA.reserve(estimate.storeSubAA);
+		plan.data_.storeSubAS.reserve(estimate.storeSubAS);
+		plan.data_.storeSubSA.reserve(estimate.storeSubSA);
+		plan.data_.storeMulAA.reserve(estimate.storeMulAA);
+		plan.data_.storeMulAS.reserve(estimate.storeMulAS);
+		plan.data_.storeDivAA.reserve(estimate.storeDivAA);
+		plan.data_.storeDivAS.reserve(estimate.storeDivAS);
+		plan.data_.storeDivSA.reserve(estimate.storeDivSA);
+	}
+
+	static void clearFusionPlanForReuse(FusionPlan &plan) noexcept
+	{
+		internal::FusionPlanData &data{plan.data_};
+
+		data.blockCount = {};
+		data.nextRegister = {};
+		data.maxRegisterCount = {};
+		data.freeRegisters.clear();
+
+		data.addRR.clear();
+		data.addRA.clear();
+		data.addAR.clear();
+		data.addAA.clear();
+		data.addRS.clear();
+		data.addAS.clear();
+
+		data.subRR.clear();
+		data.subRA.clear();
+		data.subAR.clear();
+		data.subAA.clear();
+		data.subRS.clear();
+		data.subAS.clear();
+		data.subSR.clear();
+		data.subSA.clear();
+
+		data.mulRR.clear();
+		data.mulRA.clear();
+		data.mulAR.clear();
+		data.mulAA.clear();
+		data.mulRS.clear();
+		data.mulAS.clear();
+
+		data.divRR.clear();
+		data.divRA.clear();
+		data.divAR.clear();
+		data.divAA.clear();
+		data.divRS.clear();
+		data.divAS.clear();
+		data.divSR.clear();
+		data.divSA.clear();
+
+		data.fmaRRR.clear();
+		data.fmaRRA.clear();
+		data.fmaRAA.clear();
+		data.fmaAAA.clear();
+		data.fmaASA.clear();
+		data.fmaRAS.clear();
+		data.fmaRSA.clear();
+
+		data.storeFmaAAA.clear();
+		data.storeFmaASA.clear();
+		data.storeAddAA.clear();
+		data.storeAddAS.clear();
+		data.storeSubAA.clear();
+		data.storeSubAS.clear();
+		data.storeSubSA.clear();
+		data.storeMulAA.clear();
+		data.storeMulAS.clear();
+		data.storeDivAA.clear();
+		data.storeDivAS.clear();
+		data.storeDivSA.clear();
+
+		data.setS.clear();
+		data.storeR.clear();
+		data.storeA.clear();
+		data.storeS.clear();
+		data.ops.clear();
+	}
+
+	static void compileFusionInto(Engine &engine, const std::vector<Assignment> &assignments,
+	                              internal::AssignmentRange range, FusionPlan &plan)
+	{
+		assert(range.begin < range.end);
+
+		clearFusionPlanForReuse(plan);
+		plan.data_.blockCount =
+		    assignments[range.begin].out_->variable.array().blockCount();
+		const PlanReserveEstimate reserve{estimatePlanReserve(engine, assignments, range)};
+		reservePlanStorage(plan, reserve);
+
+		CompileContext &context{makeCompileContext(engine)};
+
+		for (std::size_t i{range.begin}; i < range.end; ++i) {
+			const Assignment &assignment{assignments[i]};
+			PendingStore store{};
+			if (makeDirectAssignmentStore(engine, assignment, store)) {
+				continue;
+			}
+
 			countUses(engine, assignment.expr_.nodeId(), context);
 		}
 
-		std::vector<std::pair<__m256 *, ValueRef>> stores{};
-		stores.reserve(assignments.size());
+		std::vector<PendingStore> &stores{engine.impl_->storeScratch};
+		stores.clear();
+		stores.reserve(assignmentCount(range));
 
-		for (const Assignment &assignment : assignments) {
-			ValueRef value{
-			    compileNode(engine, plan, assignment.expr_.nodeId(), context)};
-			stores.push_back({assignment.out_->variable.array().data(), value});
+		for (std::size_t i{range.begin}; i < range.end; ++i) {
+			const Assignment &assignment{assignments[i]};
+			PendingStore store{};
+			if (makeDirectAssignmentStore(engine, assignment, store)) {
+				stores.push_back(store);
+				continue;
+			}
+
+			ValueRef value{compileAssignmentValue(engine, plan, assignment, context)};
+			store.kind = PendingStoreKind::Value;
+			store.out = assignment.out_->variable.array().data();
+			store.value = value;
+			stores.push_back(store);
 		}
 
-		for (const std::pair<__m256 *, ValueRef> &store : stores) {
-			emitStore(plan, store.first, store.second, context);
+		for (const PendingStore &store : stores) {
+			emitPendingStore(plan, store, context);
 		}
-
-		return plan;
 	}
 
-	static ScheduledPlan compileScheduled(const Engine &engine,
-	                                      const std::vector<Assignment> &assignments)
+	static void clearScheduledPlanForReuse(ScheduledPlan &scheduled) noexcept
 	{
-		ScheduledPlan scheduled{};
-		if (assignments.empty())
-			return scheduled;
+		scheduled.data_.blockCount = {};
+		for (FusionPlan &stage : scheduled.data_.stages) {
+			clearFusionPlanForReuse(stage);
+		}
+	}
 
-		validateAssignments(engine, assignments);
-
-		const std::vector<std::vector<Assignment>> stages{buildStages(engine, assignments)};
-		scheduled.impl_->blockCount =
-		    assignments.front().out_->variable.array().blockCount();
-		scheduled.impl_->stages.reserve(stages.size());
-
-		for (const std::vector<Assignment> &stage : stages) {
-			scheduled.impl_->stages.push_back(compileFusion(engine, stage));
+	static void compileScheduledInto(Engine &engine, const std::vector<Assignment> &assignments,
+	                                 ScheduledPlan &scheduled)
+	{
+		if (assignments.empty()) {
+			clearScheduledPlanForReuse(scheduled);
+			scheduled.data_.stages.clear();
+			return;
 		}
 
-		return scheduled;
+		const std::vector<internal::AssignmentRange> &stages{
+		    buildStages(engine, assignments)};
+		scheduled.data_.blockCount =
+		    assignments.front().out_->variable.array().blockCount();
+		scheduled.data_.stages.reserve(stages.size());
+		scheduled.data_.stages.resize(stages.size());
+
+		for (std::size_t i{}; i < stages.size(); ++i) {
+			compileFusionInto(engine, assignments, stages[i],
+			                  scheduled.data_.stages[i]);
+		}
+	}
+
+	static const ScheduledPlan &
+	compileOrReuseScheduled(Engine &engine, const std::vector<Assignment> &assignments)
+	{
+		const PlanCacheKey key{validateAssignmentsAndBuildCacheKey(engine, assignments)};
+
+		if (engine.impl_->hasCachedPlan &&
+		    samePlanCacheKey(key, engine.impl_->cachedPlanKey)) {
+			return engine.impl_->cachedPlan;
+		}
+
+		engine.impl_->hasCachedPlan = false;
+		compileScheduledInto(engine, assignments, engine.impl_->cachedPlan);
+		engine.impl_->cachedPlanKey = key;
+		engine.impl_->hasCachedPlan = true;
+		return engine.impl_->cachedPlan;
 	}
 };
 }
@@ -1609,13 +2594,35 @@ void Engine::deferAssign(Array &out, const Expression &expr)
 	                                     "代入式が別のEngineに紐づいているか、無効です。");
 	internal::Compiler::resizeOutputIfEmpty(*this, variable, expr);
 
-	impl_->pendingAssignments.push_back(Assignment{out.impl_.get(), expr});
+	internal::Compiler::reserveAssignmentsFor(*this, 1);
+	impl_->pendingAssignments.push_back(
+	    Assignment{out.impl_.get(), expr, AssignmentKind::Assign});
+}
+
+void Engine::deferCompoundAssign(Array &out, const Expression &expr, internal::AssignmentKind kind)
+{
+	assert(out.impl_ != nullptr);
+	Variable &variable{out.impl_->variable};
+	internal::Compiler::requireVarOwner(*this, variable,
+	                                    "代入先が別のEngineに紐づいています。");
+	internal::Compiler::requireExprOwner(*this, expr,
+	                                     "代入式が別のEngineに紐づいているか、無効です。");
+
+	internal::Compiler::reserveAssignmentsFor(*this, 1);
+	impl_->pendingAssignments.push_back(Assignment{out.impl_.get(), expr, kind});
 }
 
 void Engine::execute()
 {
-	internal::ScheduledPlan plan{
-	    internal::Compiler::compileScheduled(*this, impl_->pendingAssignments)};
+	if (impl_->pendingAssignments.empty()) {
+		internal::Compiler::rememberExpressionReserve(*this);
+		impl_->nodes.clear();
+		return;
+	}
+
+	const internal::ScheduledPlan &plan{
+	    internal::Compiler::compileOrReuseScheduled(*this, impl_->pendingAssignments)};
+	internal::Compiler::rememberAssignmentReserve(*this);
 	impl_->pendingAssignments.clear();
 	internal::Compiler::rememberExpressionReserve(*this);
 	impl_->nodes.clear();

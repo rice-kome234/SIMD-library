@@ -7,7 +7,7 @@
 #include <immintrin.h>
 #include <initializer_list>
 #include <limits>
-#include <memory>
+#include <utility>
 #include <vector>
 
 namespace rice::simd::internal
@@ -67,9 +67,12 @@ struct ArrayData {
 	Variable variable;
 };
 
+enum class AssignmentKind { Assign, AddAssign, SubAssign, MulAssign, DivAssign };
+
 struct Assignment {
 	ArrayData *out_{};
 	Expression expr_{};
+	AssignmentKind kind{AssignmentKind::Assign};
 };
 
 enum class NodeKind { Variable, Scalar, Add, Sub, Mul, Div };
@@ -281,6 +284,34 @@ struct FmaRSA {
 	const __m256 *c;
 };
 
+struct StoreFmaAAA {
+	__m256 *out;
+	const __m256 *a;
+	const __m256 *b;
+	const __m256 *c;
+};
+struct StoreFmaASA {
+	__m256 *out;
+	const __m256 *a;
+	__m256 b;
+	const __m256 *c;
+};
+struct StoreBinaryAA {
+	__m256 *out;
+	const __m256 *a;
+	const __m256 *b;
+};
+struct StoreBinaryAS {
+	__m256 *out;
+	const __m256 *a;
+	__m256 b;
+};
+struct StoreBinarySA {
+	__m256 *out;
+	__m256 a;
+	const __m256 *b;
+};
+
 struct SetS {
 	int dst;
 	__m256 a;
@@ -354,6 +385,19 @@ struct FusionPlanData {
 	std::vector<FmaRAS> fmaRAS;
 	std::vector<FmaRSA> fmaRSA;
 
+	std::vector<StoreFmaAAA> storeFmaAAA;
+	std::vector<StoreFmaASA> storeFmaASA;
+	std::vector<StoreBinaryAA> storeAddAA;
+	std::vector<StoreBinaryAS> storeAddAS;
+	std::vector<StoreBinaryAA> storeSubAA;
+	std::vector<StoreBinaryAS> storeSubAS;
+	std::vector<StoreBinarySA> storeSubSA;
+	std::vector<StoreBinaryAA> storeMulAA;
+	std::vector<StoreBinaryAS> storeMulAS;
+	std::vector<StoreBinaryAA> storeDivAA;
+	std::vector<StoreBinaryAS> storeDivAS;
+	std::vector<StoreBinarySA> storeDivSA;
+
 	std::vector<SetS> setS;
 	std::vector<StoreR> storeR;
 	std::vector<StoreA> storeA;
@@ -367,8 +411,8 @@ public:
 	FusionPlan();
 	~FusionPlan() noexcept;
 
-	FusionPlan(const FusionPlan &) noexcept = default;
-	FusionPlan &operator=(const FusionPlan &) noexcept = default;
+	FusionPlan(const FusionPlan &) = delete;
+	FusionPlan &operator=(const FusionPlan &) = delete;
 	FusionPlan(FusionPlan &&) noexcept = default;
 	FusionPlan &operator=(FusionPlan &&) noexcept = default;
 
@@ -384,7 +428,7 @@ private:
 	int allocateRegister() noexcept;
 	void releaseRegister(int reg);
 
-	std::shared_ptr<FusionPlanData> impl_;
+	FusionPlanData data_;
 };
 
 struct ScheduledPlanData {
@@ -398,8 +442,8 @@ public:
 	ScheduledPlan();
 	~ScheduledPlan() noexcept;
 
-	ScheduledPlan(const ScheduledPlan &) noexcept = default;
-	ScheduledPlan &operator=(const ScheduledPlan &) noexcept = default;
+	ScheduledPlan(const ScheduledPlan &) = delete;
+	ScheduledPlan &operator=(const ScheduledPlan &) = delete;
 	ScheduledPlan(ScheduledPlan &&) noexcept = default;
 	ScheduledPlan &operator=(ScheduledPlan &&) noexcept = default;
 
@@ -412,13 +456,12 @@ private:
 	friend struct Compiler;
 	friend struct DebugAccess;
 
-	std::shared_ptr<ScheduledPlanData> impl_;
+	ScheduledPlanData data_;
 };
 
-struct EngineData {
-	std::vector<ExprNode> nodes;
-	std::vector<Assignment> pendingAssignments;
-	std::size_t expressionReserveHint{};
+struct PlanCacheKey {
+	std::uint64_t hash{};
+	std::size_t assignmentCount{};
 };
 
 struct KeyIndex {
@@ -434,8 +477,57 @@ struct CompileGroup {
 	bool hasCachedValue{};
 };
 
+struct AssignmentRange {
+	std::size_t begin{};
+	std::size_t end{};
+};
+
+enum class PendingStoreKind {
+	Value,
+	FmaAAA,
+	FmaASA,
+	AddAA,
+	AddAS,
+	SubAA,
+	SubAS,
+	SubSA,
+	MulAA,
+	MulAS,
+	DivAA,
+	DivAS,
+	DivSA
+};
+
+struct PendingStore {
+	PendingStoreKind kind{PendingStoreKind::Value};
+	__m256 *out{};
+	ValueRef value{};
+	const __m256 *a{};
+	const __m256 *bArray{};
+	__m256 bScalar{_mm256_setzero_ps()};
+	const __m256 *c{};
+};
+
 struct CompileContext {
 	std::vector<std::size_t> groupByNode;
 	std::vector<CompileGroup> groups;
+};
+
+struct EngineData {
+	std::vector<ExprNode> nodes;
+	std::vector<Assignment> pendingAssignments;
+	std::size_t expressionReserveHint{};
+	std::size_t assignmentReserveHint{};
+
+	ScheduledPlan cachedPlan;
+	PlanCacheKey cachedPlanKey;
+	bool hasCachedPlan{};
+
+	std::vector<AssignmentRange> stageRanges;
+	std::vector<const FloatArray *> readScratch;
+	std::vector<const FloatArray *> writeScratch;
+	std::vector<KeyIndex> keyScratch;
+	std::vector<PendingStore> storeScratch;
+	CompileContext compileContext;
 };
 }
