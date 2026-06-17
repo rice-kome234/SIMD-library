@@ -29,9 +29,9 @@ int main()
 {
 	setupConsoleEncoding();
 
-	// ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
 	std::cout << "ベンチマークの開始" << std::endl;
-
+	
+	// ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
 	// 通常式でのベンチマーク
 	const simdbench::FusedExpressionBenchmarkResult fused{
 	    simdbench::runFusedExpressionBenchmark(ELEMENT_COUNT, REPEAT_COUNT)};
