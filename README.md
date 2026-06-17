@@ -21,14 +21,22 @@ Visual Studio のジェネレーターでは、`build-cmake\Release\simd.lib` �
 
 ## Visual Studioでの実行
 
-Visual Studioでフォルダーを開く場合は、`CMakePresets.json` の `x64 Debug` または `x64 Release` を選べます。`simd_benchmark` をスタートアップ項目にすると、F5でベンチマークを実行できます。
+Visual Studioでフォルダーを開く場合は、`CMakePresets.json` の `x64 Debug` または `x64 Release` を選べます。
+通常のビルドプリセットは `Build Debug` と `Build Release` です。
 
-配布用ファイルだけを作りたい場合は、ビルドターゲットから `simd_dist` を選びます。
+F5で実行する場合は、実行対象から `simd_benchmark` または `simd_minimal_example` を選びます。
+配布用ファイルだけを作りたい場合は、ビルドプリセットから `Package simd.h + simd.lib Release` を選びます。
 
 ## ライブラリの生成
 
 公開ヘッダーと静的ライブラリだけを含む、組み込み用の配布パッケージを生成できます。
 アプリケーション側は公開インターフェースを `simd.h` から参照し、実装本体は `simd.lib` としてリンクします。
+
+```powershell
+cmake --build --preset package-release
+```
+
+`build-cmake` を使っている場合は、次のようにターゲットを指定します。
 
 ```powershell
 cmake --build build-cmake --config Release --target simd_dist

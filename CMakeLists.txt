@@ -44,7 +44,7 @@ add_custom_target(simd_dist
 		$<TARGET_FILE:simd>
 		${SIMD_LIBRARY_DIST_DIR}/$<TARGET_FILE_NAME:simd>
 	DEPENDS simd
-	COMMENT "Create minimal distribution package in dist/"
+	COMMENT "Create dist package with simd.h and simd.lib"
 )
 
 if(SIMD_LIBRARY_BUILD_TESTS)

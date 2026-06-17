@@ -36,8 +36,8 @@ int main()
 	const simdbench::FusedExpressionBenchmarkResult fused{
 	    simdbench::runFusedExpressionBenchmark(ELEMENT_COUNT, REPEAT_COUNT)};
 
-	// Vector3の位置・速度更新のベンチマーク
-	const simdbench::ThreeComponentUpdateBenchmarkResult componentUpdate{
+	// 位置と速度をまとめて更新するベンチマーク
+	const simdbench::ThreeComponentUpdateBenchmarkResult motionUpdate{
 	    simdbench::runThreeComponentUpdateBenchmark(ELEMENT_COUNT, REPEAT_COUNT, DELTA_TIME)};
 
 	// 入力サイズと繰り返し回数を先に表示して、実行条件を結果と一緒に確認できるようにしています。
@@ -54,21 +54,20 @@ int main()
 	std::cout << "数値誤差(通常ループ と 式API): " << fused.expressionXError << "\n";
 	std::cout << "\n";
 
-	std::cout << "[3成分の位置・速度更新の比較]\n";
-	std::cout << "SIMDなしの通常ループ                  : " << componentUpdate.scalarMs
+	std::cout << "[位置と速度の更新処理の比較]\n";
+	std::cout << "SIMDなしの通常ループ                  : " << motionUpdate.scalarMs << " ms\n";
+	std::cout << "手書きSIMD                            : " << motionUpdate.manualSimdMs
 	          << " ms\n";
-	std::cout << "手書きSIMD                            : " << componentUpdate.manualSimdMs
+	std::cout << "DirectXMath                           : " << motionUpdate.directXMathMs
 	          << " ms\n";
-	std::cout << "DirectXMath                           : " << componentUpdate.directXMathMs
+	std::cout << "式API                                 : " << motionUpdate.specializedUpdateMs
 	          << " ms\n";
-	std::cout << "式API                                 : "
-	          << componentUpdate.specializedUpdateMs << " ms\n";
-	std::cout << "数値誤差(通常ループ と SIMD)          : "
-	          << componentUpdate.scalarPositionXError << "\n";
+	std::cout << "数値誤差(通常ループ と SIMD)          : " << motionUpdate.scalarPositionXError
+	          << "\n";
 	std::cout << "数値誤差(通常ループ と DXMath)        : "
-	          << componentUpdate.directXMathPositionXError << "\n";
+	          << motionUpdate.directXMathPositionXError << "\n";
 	std::cout << "数値誤差(通常ループ と 式API)         : "
-	          << componentUpdate.specializedPositionXError << "\n";
+	          << motionUpdate.specializedPositionXError << "\n";
 
 	return 0;
 }

@@ -42,26 +42,18 @@
   ],
   "buildPresets": [
     {
-      "name": "benchmark-debug",
-      "displayName": "Build benchmark Debug",
-      "configurePreset": "x64-debug",
-      "targets": ["simd_benchmark"]
+      "name": "debug",
+      "displayName": "Build Debug",
+      "configurePreset": "x64-debug"
     },
     {
-      "name": "benchmark-release",
-      "displayName": "Build benchmark Release",
-      "configurePreset": "x64-release",
-      "targets": ["simd_benchmark"]
+      "name": "release",
+      "displayName": "Build Release",
+      "configurePreset": "x64-release"
     },
     {
-      "name": "minimal-release",
-      "displayName": "Build minimal example Release",
-      "configurePreset": "x64-release",
-      "targets": ["simd_minimal_example"]
-    },
-    {
-      "name": "dist-release",
-      "displayName": "Build minimal distribution Release",
+      "name": "package-release",
+      "displayName": "Package simd.h + simd.lib Release",
       "configurePreset": "x64-release",
       "targets": ["simd_dist"]
     }
