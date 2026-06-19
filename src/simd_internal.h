@@ -1,10 +1,10 @@
 #pragma once
 
 #include "simd.h"
+#include "simd_backend.h"
 
 #include <cstddef>
 #include <cstdint>
-#include <immintrin.h>
 #include <initializer_list>
 #include <limits>
 #include <utility>
@@ -12,7 +12,6 @@
 
 namespace rice::simd::internal
 {
-inline constexpr std::size_t SIMD_WIDTH{8};
 inline constexpr int MAX_REGISTERS{32};
 inline constexpr std::size_t INVALID_NODE{std::numeric_limits<std::size_t>::max()};
 
@@ -26,23 +25,25 @@ public:
 	void resize(std::size_t elementCount);
 	std::size_t elementCount() const noexcept;
 	std::size_t blockCount() const noexcept;
-	__m256 &block(std::size_t index) noexcept;
-	const __m256 &block(std::size_t index) const noexcept;
-	__m256 *data() noexcept;
-	const __m256 *data() const noexcept;
+	SimdBlock &block(std::size_t index) noexcept;
+	const SimdBlock &block(std::size_t index) const noexcept;
+	SimdBlock *data() noexcept;
+	const SimdBlock *data() const noexcept;
 	void fill(float value) noexcept;
 	void assign(std::size_t elementCount, float value);
+	void copyFrom(const FloatArray &source);
 	void copyFrom(const std::vector<float> &values);
 	void copyFrom(std::initializer_list<float> values);
 	void push_back(float value);
+	float element(std::size_t index) const noexcept;
+	void setElement(std::size_t index, float value) noexcept;
 	void copyTo(std::vector<float> &out) const;
 
 private:
 	void copyFrom(const float *values, std::size_t count);
-	void setElement(std::size_t index, float value) noexcept;
 
 	std::size_t elementCount_{};
-	std::vector<__m256> blocks_;
+	std::vector<SimdBlock> blocks_;
 };
 
 class Variable
@@ -91,8 +92,8 @@ enum class ValueKind { Reg, Array, Scalar };
 struct ValueRef {
 	ValueKind kind{ValueKind::Scalar};
 	int reg{-1};
-	const __m256 *array{};
-	__m256 scalar{_mm256_setzero_ps()};
+	const SimdBlock *array{};
+	SimdBlock scalar{zeroBlock()};
 	std::size_t group{INVALID_NODE};
 	bool hasGroup{};
 };
@@ -105,27 +106,27 @@ struct AddRR {
 struct AddRA {
 	int dst;
 	int a;
-	const __m256 *b;
+	const SimdBlock *b;
 };
 struct AddAR {
 	int dst;
-	const __m256 *a;
+	const SimdBlock *a;
 	int b;
 };
 struct AddAA {
 	int dst;
-	const __m256 *a;
-	const __m256 *b;
+	const SimdBlock *a;
+	const SimdBlock *b;
 };
 struct AddRS {
 	int dst;
 	int a;
-	__m256 b;
+	SimdBlock b;
 };
 struct AddAS {
 	int dst;
-	const __m256 *a;
-	__m256 b;
+	const SimdBlock *a;
+	SimdBlock b;
 };
 
 struct SubRR {
@@ -136,37 +137,37 @@ struct SubRR {
 struct SubRA {
 	int dst;
 	int a;
-	const __m256 *b;
+	const SimdBlock *b;
 };
 struct SubAR {
 	int dst;
-	const __m256 *a;
+	const SimdBlock *a;
 	int b;
 };
 struct SubAA {
 	int dst;
-	const __m256 *a;
-	const __m256 *b;
+	const SimdBlock *a;
+	const SimdBlock *b;
 };
 struct SubRS {
 	int dst;
 	int a;
-	__m256 b;
+	SimdBlock b;
 };
 struct SubAS {
 	int dst;
-	const __m256 *a;
-	__m256 b;
+	const SimdBlock *a;
+	SimdBlock b;
 };
 struct SubSR {
 	int dst;
-	__m256 a;
+	SimdBlock a;
 	int b;
 };
 struct SubSA {
 	int dst;
-	__m256 a;
-	const __m256 *b;
+	SimdBlock a;
+	const SimdBlock *b;
 };
 
 struct MulRR {
@@ -177,27 +178,27 @@ struct MulRR {
 struct MulRA {
 	int dst;
 	int a;
-	const __m256 *b;
+	const SimdBlock *b;
 };
 struct MulAR {
 	int dst;
-	const __m256 *a;
+	const SimdBlock *a;
 	int b;
 };
 struct MulAA {
 	int dst;
-	const __m256 *a;
-	const __m256 *b;
+	const SimdBlock *a;
+	const SimdBlock *b;
 };
 struct MulRS {
 	int dst;
 	int a;
-	__m256 b;
+	SimdBlock b;
 };
 struct MulAS {
 	int dst;
-	const __m256 *a;
-	__m256 b;
+	const SimdBlock *a;
+	SimdBlock b;
 };
 
 struct DivRR {
@@ -208,37 +209,37 @@ struct DivRR {
 struct DivRA {
 	int dst;
 	int a;
-	const __m256 *b;
+	const SimdBlock *b;
 };
 struct DivAR {
 	int dst;
-	const __m256 *a;
+	const SimdBlock *a;
 	int b;
 };
 struct DivAA {
 	int dst;
-	const __m256 *a;
-	const __m256 *b;
+	const SimdBlock *a;
+	const SimdBlock *b;
 };
 struct DivRS {
 	int dst;
 	int a;
-	__m256 b;
+	SimdBlock b;
 };
 struct DivAS {
 	int dst;
-	const __m256 *a;
-	__m256 b;
+	const SimdBlock *a;
+	SimdBlock b;
 };
 struct DivSR {
 	int dst;
-	__m256 a;
+	SimdBlock a;
 	int b;
 };
 struct DivSA {
 	int dst;
-	__m256 a;
-	const __m256 *b;
+	SimdBlock a;
+	const SimdBlock *b;
 };
 
 struct FmaRRR {
@@ -251,87 +252,129 @@ struct FmaRRA {
 	int dst;
 	int a;
 	int b;
-	const __m256 *c;
+	const SimdBlock *c;
 };
 struct FmaRAA {
 	int dst;
 	int a;
-	const __m256 *b;
-	const __m256 *c;
+	const SimdBlock *b;
+	const SimdBlock *c;
 };
 struct FmaAAA {
 	int dst;
-	const __m256 *a;
-	const __m256 *b;
-	const __m256 *c;
+	const SimdBlock *a;
+	const SimdBlock *b;
+	const SimdBlock *c;
 };
 struct FmaASA {
 	int dst;
-	const __m256 *a;
-	__m256 b;
-	const __m256 *c;
+	const SimdBlock *a;
+	SimdBlock b;
+	const SimdBlock *c;
 };
 struct FmaRAS {
 	int dst;
 	int a;
-	const __m256 *b;
-	__m256 c;
+	const SimdBlock *b;
+	SimdBlock c;
 };
 struct FmaRSA {
 	int dst;
 	int a;
-	__m256 b;
-	const __m256 *c;
+	SimdBlock b;
+	const SimdBlock *c;
 };
 
 struct StoreFmaAAA {
-	__m256 *out;
-	const __m256 *a;
-	const __m256 *b;
-	const __m256 *c;
+	SimdBlock *out;
+	const SimdBlock *a;
+	const SimdBlock *b;
+	const SimdBlock *c;
 };
 struct StoreFmaASA {
-	__m256 *out;
-	const __m256 *a;
-	__m256 b;
-	const __m256 *c;
+	SimdBlock *out;
+	const SimdBlock *a;
+	SimdBlock b;
+	const SimdBlock *c;
+};
+struct StoreFmaRRR {
+	SimdBlock *out;
+	int a;
+	int b;
+	int c;
+};
+struct StoreFmaRRA {
+	SimdBlock *out;
+	int a;
+	int b;
+	const SimdBlock *c;
+};
+struct StoreFmaRAA {
+	SimdBlock *out;
+	int a;
+	const SimdBlock *b;
+	const SimdBlock *c;
+};
+struct StoreFmaRAS {
+	SimdBlock *out;
+	int a;
+	const SimdBlock *b;
+	SimdBlock c;
+};
+struct StoreFmaRSA {
+	SimdBlock *out;
+	int a;
+	SimdBlock b;
+	const SimdBlock *c;
+};
+struct StoreNegFmaAAA {
+	SimdBlock *out;
+	const SimdBlock *a;
+	const SimdBlock *b;
+	const SimdBlock *c;
+};
+struct StoreNegFmaASA {
+	SimdBlock *out;
+	const SimdBlock *a;
+	SimdBlock b;
+	const SimdBlock *c;
 };
 struct StoreBinaryAA {
-	__m256 *out;
-	const __m256 *a;
-	const __m256 *b;
+	SimdBlock *out;
+	const SimdBlock *a;
+	const SimdBlock *b;
 };
 struct StoreBinaryAS {
-	__m256 *out;
-	const __m256 *a;
-	__m256 b;
+	SimdBlock *out;
+	const SimdBlock *a;
+	SimdBlock b;
 };
 struct StoreBinarySA {
-	__m256 *out;
-	__m256 a;
-	const __m256 *b;
+	SimdBlock *out;
+	SimdBlock a;
+	const SimdBlock *b;
 };
 
 struct SetS {
 	int dst;
-	__m256 a;
+	SimdBlock a;
 };
 struct StoreR {
-	__m256 *out;
+	SimdBlock *out;
 	int a;
 };
 struct StoreA {
-	__m256 *out;
-	const __m256 *a;
+	SimdBlock *out;
+	const SimdBlock *a;
 };
 struct StoreS {
-	__m256 *out;
-	__m256 a;
+	SimdBlock *out;
+	SimdBlock a;
 };
 
 struct FusionPlanData;
 
-using OpExecutor = void (*)(const FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+using OpExecutor = void (*)(const FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                             std::size_t index) noexcept;
 
 struct OpRef {
@@ -341,8 +384,10 @@ struct OpRef {
 
 struct FusionPlanData {
 	std::size_t blockCount{};
+	std::size_t directInstructionCount{};
 	int nextRegister{};
 	int maxRegisterCount{};
+	bool directOnly{true};
 	std::vector<int> freeRegisters;
 
 	std::vector<AddRR> addRR;
@@ -387,6 +432,13 @@ struct FusionPlanData {
 
 	std::vector<StoreFmaAAA> storeFmaAAA;
 	std::vector<StoreFmaASA> storeFmaASA;
+	std::vector<StoreFmaRRR> storeFmaRRR;
+	std::vector<StoreFmaRRA> storeFmaRRA;
+	std::vector<StoreFmaRAA> storeFmaRAA;
+	std::vector<StoreFmaRAS> storeFmaRAS;
+	std::vector<StoreFmaRSA> storeFmaRSA;
+	std::vector<StoreNegFmaAAA> storeNegFmaAAA;
+	std::vector<StoreNegFmaASA> storeNegFmaASA;
 	std::vector<StoreBinaryAA> storeAddAA;
 	std::vector<StoreBinaryAS> storeAddAS;
 	std::vector<StoreBinaryAA> storeSubAA;
@@ -424,7 +476,7 @@ private:
 	friend class ScheduledPlan;
 	friend struct Compiler;
 
-	void executeBlock(std::size_t blockIndex, __m256 *regs) const noexcept;
+	void executeBlock(std::size_t blockIndex, SimdBlock *regs) const noexcept;
 	int allocateRegister() noexcept;
 	void releaseRegister(int reg);
 
@@ -486,6 +538,8 @@ enum class PendingStoreKind {
 	Value,
 	FmaAAA,
 	FmaASA,
+	NegFmaAAA,
+	NegFmaASA,
 	AddAA,
 	AddAS,
 	SubAA,
@@ -500,12 +554,12 @@ enum class PendingStoreKind {
 
 struct PendingStore {
 	PendingStoreKind kind{PendingStoreKind::Value};
-	__m256 *out{};
+	SimdBlock *out{};
 	ValueRef value{};
-	const __m256 *a{};
-	const __m256 *bArray{};
-	__m256 bScalar{_mm256_setzero_ps()};
-	const __m256 *c{};
+	const SimdBlock *a{};
+	const SimdBlock *bArray{};
+	SimdBlock bScalar{zeroBlock()};
+	const SimdBlock *c{};
 };
 
 struct CompileContext {
@@ -526,7 +580,7 @@ struct EngineData {
 	std::vector<AssignmentRange> stageRanges;
 	std::vector<const FloatArray *> readScratch;
 	std::vector<const FloatArray *> writeScratch;
-	std::vector<KeyIndex> keyScratch;
+	std::vector<KeyIndex> nodeKeyIndex;
 	std::vector<PendingStore> storeScratch;
 	CompileContext compileContext;
 };

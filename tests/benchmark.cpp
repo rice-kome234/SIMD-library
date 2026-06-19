@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <immintrin.h>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -72,7 +71,7 @@ void fillRandom(Array &array, float minValue, float maxValue, std::uint32_t seed
 {
 	std::mt19937 engine{seed};
 	std::uniform_real_distribution<float> dist{minValue, maxValue};
-	alignas(32) float temp[low_level::SIMD_WIDTH]{};
+	alignas(low_level::SIMD_ALIGNMENT) float temp[low_level::SIMD_WIDTH]{};
 
 	for (std::size_t blockIndex{}; blockIndex < low_level::blockCount(array); ++blockIndex) {
 		for (std::size_t lane{}; lane < low_level::SIMD_WIDTH; ++lane) {
@@ -84,8 +83,41 @@ void fillRandom(Array &array, float minValue, float maxValue, std::uint32_t seed
 			}
 		}
 
-		low_level::block(array, blockIndex) = _mm256_load_ps(temp);
+		low_level::block(array, blockIndex) = low_level::loadAligned(temp);
 	}
+}
+
+std::vector<float> makeRandomVector(std::size_t elementCount, float minValue, float maxValue,
+                                    std::uint32_t seed)
+{
+	std::mt19937 engine{seed};
+	std::uniform_real_distribution<float> dist{minValue, maxValue};
+	std::vector<float> values(elementCount);
+
+	for (float &value : values) {
+		value = dist(engine);
+	}
+
+	return values;
+}
+
+std::vector<float> makeBatchedAddend(std::size_t elementCount, std::size_t outputIndex)
+{
+	return makeRandomVector(elementCount, -5.0f, 5.0f,
+	                        static_cast<std::uint32_t>(200 + outputIndex));
+}
+
+std::vector<std::vector<float>> makeBatchedAddends(std::size_t elementCount,
+                                                   std::size_t outputCount)
+{
+	std::vector<std::vector<float>> addends{};
+	addends.reserve(outputCount);
+
+	for (std::size_t i{}; i < outputCount; ++i) {
+		addends.push_back(makeBatchedAddend(elementCount, i));
+	}
+
+	return addends;
 }
 
 float maxAbsError(const std::vector<float> &lhs, const std::vector<float> &rhs)
@@ -103,9 +135,9 @@ float maxAbsError(const std::vector<float> &lhs, const std::vector<float> &rhs)
 	return maxError;
 }
 
-void makeThreeComponentUpdatePlan(Engine &engine, ThreeComponentArrays &position,
-                                  ThreeComponentArrays &velocity,
-                                  const ThreeComponentArrays &acceleration, float dt)
+void executeExpressionThreeComponentUpdate(Engine &engine, ThreeComponentArrays &position,
+                                           ThreeComponentArrays &velocity,
+                                           const ThreeComponentArrays &acceleration, float dt)
 {
 	velocity.x += acceleration.x * dt;
 	velocity.y += acceleration.y * dt;
@@ -122,15 +154,12 @@ void executeManualMultiplyAdd(const Array &a, const Array &b, const Array &c, co
                               const Array &e, Array &x, Array &y, Array &z)
 {
 	for (std::size_t i{}; i < low_level::blockCount(x); ++i) {
-		low_level::block(x, i) =
-		    _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))),
-		                  low_level::block(c, i));
-		low_level::block(y, i) =
-		    _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))),
-		                  low_level::block(d, i));
-		low_level::block(z, i) =
-		    _mm256_add_ps((_mm256_mul_ps(low_level::block(a, i), low_level::block(b, i))),
-		                  low_level::block(e, i));
+		low_level::block(x, i) = low_level::multiplyAdd(
+		    low_level::block(a, i), low_level::block(b, i), low_level::block(c, i));
+		low_level::block(y, i) = low_level::multiplyAdd(
+		    low_level::block(a, i), low_level::block(b, i), low_level::block(d, i));
+		low_level::block(z, i) = low_level::multiplyAdd(
+		    low_level::block(a, i), low_level::block(b, i), low_level::block(e, i));
 	}
 }
 
@@ -164,11 +193,11 @@ void executeDirectXMathMultiplyAdd(const std::vector<float> &a, const std::vecto
 	}
 }
 
-SIMD_BENCH_NO_VECTORIZE_FUNCTION 
+SIMD_BENCH_NO_VECTORIZE_FUNCTION
 void executeScalarMultiplyAdd(const std::vector<float> &a, const std::vector<float> &b,
-                         const std::vector<float> &c, const std::vector<float> &d,
-                         const std::vector<float> &e, std::vector<float> &x, std::vector<float> &y,
-                         std::vector<float> &z)
+                              const std::vector<float> &c, const std::vector<float> &d,
+                              const std::vector<float> &e, std::vector<float> &x,
+                              std::vector<float> &y, std::vector<float> &z)
 {
 	SIMD_BENCH_DISABLE_LOOP_VECTORIZATION
 	for (std::size_t i{}; i < x.size(); ++i) {
@@ -189,28 +218,163 @@ void executeExpressionApiMultiplyAdd(Engine &engine, const Array &a, const Array
 	engine.execute();
 }
 
+SIMD_BENCH_NO_VECTORIZE_FUNCTION
+void executeScalarBatchedMultiplyAdd(const std::vector<float> &a, const std::vector<float> &b,
+                                     const std::vector<std::vector<float>> &addends,
+                                     std::vector<std::vector<float>> &outputs)
+{
+	for (std::size_t outputIndex{}; outputIndex < outputs.size(); ++outputIndex) {
+		const std::vector<float> &addend{addends[outputIndex]};
+		std::vector<float> &out{outputs[outputIndex]};
+
+		SIMD_BENCH_DISABLE_LOOP_VECTORIZATION
+		for (std::size_t i{}; i < out.size(); ++i) {
+			out[i] = a[i] * b[i] + addend[i];
+		}
+	}
+}
+
+void executeManualBatchedMultiplyAdd(const Array &a, const Array &b,
+                                     const std::vector<Array> &addends,
+                                     std::vector<Array> &outputs)
+{
+	for (std::size_t outputIndex{}; outputIndex < outputs.size(); ++outputIndex) {
+		Array &out{outputs[outputIndex]};
+		const Array &addend{addends[outputIndex]};
+
+		for (std::size_t blockIndex{}; blockIndex < low_level::blockCount(out);
+		     ++blockIndex) {
+			low_level::block(out, blockIndex) =
+			    low_level::multiplyAdd(low_level::block(a, blockIndex),
+			                           low_level::block(b, blockIndex),
+			                           low_level::block(addend, blockIndex));
+		}
+	}
+}
+
+void executeDirectXMathBatchedMultiplyAdd(const std::vector<float> &a,
+                                          const std::vector<float> &b,
+                                          const std::vector<std::vector<float>> &addends,
+                                          std::vector<std::vector<float>> &outputs)
+{
+	constexpr std::size_t directXMathWidth{4};
+
+	for (std::size_t outputIndex{}; outputIndex < outputs.size(); ++outputIndex) {
+		const std::vector<float> &addend{addends[outputIndex]};
+		std::vector<float> &out{outputs[outputIndex]};
+		std::size_t i{};
+
+		for (; i + directXMathWidth <= out.size(); i += directXMathWidth) {
+			const XMVECTOR av{
+			    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(a.data() + i))};
+			const XMVECTOR bv{
+			    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(b.data() + i))};
+			const XMVECTOR addendVector{
+			    XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(addend.data() + i))};
+
+			XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(out.data() + i),
+			              XMVectorMultiplyAdd(av, bv, addendVector));
+		}
+
+		for (; i < out.size(); ++i) {
+			out[i] = a[i] * b[i] + addend[i];
+		}
+	}
+}
+
+SIMD_BENCH_NO_VECTORIZE_FUNCTION
+void executeScalarHeavyExpression(const std::vector<float> &a, const std::vector<float> &b,
+                                  const std::vector<float> &c, const std::vector<float> &d,
+                                  const std::vector<float> &e, const std::vector<float> &f,
+                                  std::vector<float> &out)
+{
+	SIMD_BENCH_DISABLE_LOOP_VECTORIZATION
+	for (std::size_t i{}; i < out.size(); ++i) {
+		const float left{a[i] * b[i] + c[i]};
+		const float right{d[i] * e[i] + f[i]};
+		const float extra{(a[i] + d[i]) * (b[i] + e[i])};
+		out[i] = left * right + extra;
+	}
+}
+
+void executeManualHeavyExpression(const Array &a, const Array &b, const Array &c, const Array &d,
+                                  const Array &e, const Array &f, Array &out)
+{
+	for (std::size_t i{}; i < low_level::blockCount(out); ++i) {
+		const low_level::Block left{low_level::multiplyAdd(
+		    low_level::block(a, i), low_level::block(b, i), low_level::block(c, i))};
+		const low_level::Block right{low_level::multiplyAdd(
+		    low_level::block(d, i), low_level::block(e, i), low_level::block(f, i))};
+		const low_level::Block extra{low_level::mul(
+		    low_level::add(low_level::block(a, i), low_level::block(d, i)),
+		    low_level::add(low_level::block(b, i), low_level::block(e, i)))};
+
+		low_level::block(out, i) = low_level::multiplyAdd(left, right, extra);
+	}
+}
+
+void executeDirectXMathHeavyExpression(const std::vector<float> &a, const std::vector<float> &b,
+                                       const std::vector<float> &c, const std::vector<float> &d,
+                                       const std::vector<float> &e, const std::vector<float> &f,
+                                       std::vector<float> &out)
+{
+	constexpr std::size_t directXMathWidth{4};
+	std::size_t i{};
+
+	for (; i + directXMathWidth <= out.size(); i += directXMathWidth) {
+		const XMVECTOR av{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(a.data() + i))};
+		const XMVECTOR bv{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(b.data() + i))};
+		const XMVECTOR cv{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(c.data() + i))};
+		const XMVECTOR dv{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(d.data() + i))};
+		const XMVECTOR ev{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(e.data() + i))};
+		const XMVECTOR fv{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(f.data() + i))};
+
+		const XMVECTOR left{XMVectorMultiplyAdd(av, bv, cv)};
+		const XMVECTOR right{XMVectorMultiplyAdd(dv, ev, fv)};
+		const XMVECTOR extra{XMVectorMultiply(XMVectorAdd(av, dv), XMVectorAdd(bv, ev))};
+
+		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(out.data() + i),
+		              XMVectorMultiplyAdd(left, right, extra));
+	}
+
+	for (; i < out.size(); ++i) {
+		const float left{a[i] * b[i] + c[i]};
+		const float right{d[i] * e[i] + f[i]};
+		const float extra{(a[i] + d[i]) * (b[i] + e[i])};
+		out[i] = left * right + extra;
+	}
+}
+
+void executeExpressionHeavyExpression(Engine &engine, const Array &a, const Array &b,
+                                      const Array &c, const Array &d, const Array &e,
+                                      const Array &f, Array &out)
+{
+	out = (a * b + c) * (d * e + f) + (a + d) * (b + e);
+	engine.execute();
+}
+
 void directThreeComponentUpdate(ThreeComponentArrays &position, ThreeComponentArrays &velocity,
                                 const ThreeComponentArrays &acceleration, float dt)
 {
-	const __m256 dtBlock{_mm256_set1_ps(dt)};
+	const low_level::Block dtBlock{low_level::set1(dt)};
 
 	for (std::size_t i{}; i < low_level::blockCount(position.x); ++i) {
-		low_level::block(velocity.x, i) = _mm256_fmadd_ps(
+		low_level::block(velocity.x, i) = low_level::multiplyAdd(
 		    low_level::block(acceleration.x, i), dtBlock, low_level::block(velocity.x, i));
 
-		low_level::block(velocity.y, i) = _mm256_fmadd_ps(
+		low_level::block(velocity.y, i) = low_level::multiplyAdd(
 		    low_level::block(acceleration.y, i), dtBlock, low_level::block(velocity.y, i));
 
-		low_level::block(velocity.z, i) = _mm256_fmadd_ps(
+		low_level::block(velocity.z, i) = low_level::multiplyAdd(
 		    low_level::block(acceleration.z, i), dtBlock, low_level::block(velocity.z, i));
 
-		low_level::block(position.x, i) = _mm256_fmadd_ps(
+		low_level::block(position.x, i) = low_level::multiplyAdd(
 		    low_level::block(velocity.x, i), dtBlock, low_level::block(position.x, i));
 
-		low_level::block(position.y, i) = _mm256_fmadd_ps(
+		low_level::block(position.y, i) = low_level::multiplyAdd(
 		    low_level::block(velocity.y, i), dtBlock, low_level::block(position.y, i));
 
-		low_level::block(position.z, i) = _mm256_fmadd_ps(
+		low_level::block(position.z, i) = low_level::multiplyAdd(
 		    low_level::block(velocity.z, i), dtBlock, low_level::block(position.z, i));
 	}
 }
@@ -504,8 +668,8 @@ runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, floa
 	Timer specializedTimer{};
 
 	for (int i{}; i < repeatCount; ++i) {
-		makeThreeComponentUpdatePlan(engine, specializedPosition, specializedVelocity,
-		                             acceleration, deltaTime);
+		executeExpressionThreeComponentUpdate(engine, specializedPosition,
+		                                      specializedVelocity, acceleration, deltaTime);
 	}
 
 	const double specializedMs{specializedTimer.elapsedMilliseconds()};
@@ -527,6 +691,253 @@ runThreeComponentUpdateBenchmark(std::size_t elementCount, int repeatCount, floa
 	result.scalarPositionXError = maxAbsError(scalarPositionX, directPosXS);
 	result.directXMathPositionXError = maxAbsError(scalarPositionX, directXMathPositionX);
 	result.specializedPositionXError = maxAbsError(scalarPositionX, specializedPosXS);
+	return result;
+}
+
+BatchedExecutionBenchmarkResult runBatchedExecutionBenchmark(std::size_t elementCount,
+                                                             std::size_t outputCount,
+                                                             int repeatCount)
+{
+	if (outputCount == 0) {
+		throw std::invalid_argument{"出力配列数は1以上にしてください。"};
+	}
+
+	const std::vector<float> scalarA{makeRandomVector(elementCount, -10.0f, 10.0f, 101)};
+	const std::vector<float> scalarB{makeRandomVector(elementCount, -10.0f, 10.0f, 102)};
+
+	double scalarMs{};
+	double manualMs{};
+	double directXMathMs{};
+	double sequentialMs{};
+	double batchedMs{};
+
+	std::vector<float> scalarFirstOutput{};
+	std::vector<float> manualFirstOutput{};
+	std::vector<float> directXMathFirstOutput{};
+	std::vector<float> sequentialFirstOutput{};
+	std::vector<float> batchedFirstOutput{};
+
+	{
+		std::vector<std::vector<float>> scalarAddends{
+		    makeBatchedAddends(elementCount, outputCount)};
+		std::vector<std::vector<float>> scalarOutputs(outputCount);
+		for (std::vector<float> &output : scalarOutputs) {
+			output.resize(elementCount);
+		}
+
+		Timer scalarTimer{};
+
+		for (int i{}; i < repeatCount; ++i) {
+			executeScalarBatchedMultiplyAdd(scalarA, scalarB, scalarAddends, scalarOutputs);
+		}
+
+		scalarMs = scalarTimer.elapsedMilliseconds();
+		scalarFirstOutput = scalarOutputs.front();
+	}
+
+	{
+		Engine manualEngine{};
+		Array manualA{manualEngine, scalarA};
+		Array manualB{manualEngine, scalarB};
+		std::vector<Array> manualAddends{};
+		std::vector<Array> manualOutputs{};
+		manualAddends.reserve(outputCount);
+		manualOutputs.reserve(outputCount);
+
+		for (std::size_t i{}; i < outputCount; ++i) {
+			manualAddends.emplace_back(manualEngine, makeBatchedAddend(elementCount, i));
+			manualOutputs.emplace_back(manualEngine, elementCount);
+		}
+
+		Timer manualTimer{};
+
+		for (int i{}; i < repeatCount; ++i) {
+			executeManualBatchedMultiplyAdd(manualA, manualB, manualAddends,
+			                                manualOutputs);
+		}
+
+		manualMs = manualTimer.elapsedMilliseconds();
+		manualOutputs.front().copyTo(manualFirstOutput);
+	}
+
+	{
+		std::vector<std::vector<float>> directXMathAddends{
+		    makeBatchedAddends(elementCount, outputCount)};
+		std::vector<std::vector<float>> directXMathOutputs(outputCount);
+		for (std::vector<float> &output : directXMathOutputs) {
+			output.resize(elementCount);
+		}
+
+		Timer directXMathTimer{};
+
+		for (int i{}; i < repeatCount; ++i) {
+			executeDirectXMathBatchedMultiplyAdd(scalarA, scalarB, directXMathAddends,
+			                                     directXMathOutputs);
+		}
+
+		directXMathMs = directXMathTimer.elapsedMilliseconds();
+		directXMathFirstOutput = directXMathOutputs.front();
+	}
+
+	{
+		Engine sequentialEngine{};
+		Array sequentialA{sequentialEngine, scalarA};
+		Array sequentialB{sequentialEngine, scalarB};
+		std::vector<Array> sequentialAddends{};
+		std::vector<Array> sequentialOutputs{};
+		sequentialAddends.reserve(outputCount);
+		sequentialOutputs.reserve(outputCount);
+
+		for (std::size_t i{}; i < outputCount; ++i) {
+			sequentialAddends.emplace_back(sequentialEngine,
+			                               makeBatchedAddend(elementCount, i));
+			sequentialOutputs.emplace_back(sequentialEngine, elementCount);
+		}
+
+		Timer sequentialTimer{};
+
+		for (int i{}; i < repeatCount; ++i) {
+			for (std::size_t outputIndex{}; outputIndex < outputCount; ++outputIndex) {
+				sequentialOutputs[outputIndex] =
+				    sequentialA * sequentialB + sequentialAddends[outputIndex];
+				sequentialEngine.execute();
+			}
+		}
+
+		sequentialMs = sequentialTimer.elapsedMilliseconds();
+		sequentialOutputs.front().copyTo(sequentialFirstOutput);
+	}
+
+	{
+		Engine batchedEngine{};
+		Array batchedA{batchedEngine, scalarA};
+		Array batchedB{batchedEngine, scalarB};
+		std::vector<Array> batchedAddends{};
+		std::vector<Array> batchedOutputs{};
+		batchedAddends.reserve(outputCount);
+		batchedOutputs.reserve(outputCount);
+
+		for (std::size_t i{}; i < outputCount; ++i) {
+			batchedAddends.emplace_back(batchedEngine, makeBatchedAddend(elementCount, i));
+			batchedOutputs.emplace_back(batchedEngine, elementCount);
+		}
+
+		Timer batchedTimer{};
+
+		for (int i{}; i < repeatCount; ++i) {
+			for (std::size_t outputIndex{}; outputIndex < outputCount; ++outputIndex) {
+				batchedOutputs[outputIndex] =
+				    batchedA * batchedB + batchedAddends[outputIndex];
+			}
+
+			batchedEngine.execute();
+		}
+
+		batchedMs = batchedTimer.elapsedMilliseconds();
+		batchedOutputs.front().copyTo(batchedFirstOutput);
+	}
+
+	BatchedExecutionBenchmarkResult result{};
+	result.elementCount = elementCount;
+	result.outputCount = outputCount;
+	result.repeatCount = repeatCount;
+	result.scalarMs = scalarMs;
+	result.manualSimdMs = manualMs;
+	result.directXMathMs = directXMathMs;
+	result.sequentialExpressionMs = sequentialMs;
+	result.batchedExpressionMs = batchedMs;
+	result.manualSimdFirstOutputError = maxAbsError(scalarFirstOutput, manualFirstOutput);
+	result.directXMathFirstOutputError =
+	    maxAbsError(scalarFirstOutput, directXMathFirstOutput);
+	result.sequentialFirstOutputError = maxAbsError(scalarFirstOutput, sequentialFirstOutput);
+	result.batchedFirstOutputError = maxAbsError(scalarFirstOutput, batchedFirstOutput);
+	return result;
+}
+
+HeavyExpressionBenchmarkResult runHeavyExpressionBenchmark(std::size_t elementCount,
+                                                           int repeatCount)
+{
+	const std::vector<float> scalarA{makeRandomVector(elementCount, -2.0f, 2.0f, 301)};
+	const std::vector<float> scalarB{makeRandomVector(elementCount, -2.0f, 2.0f, 302)};
+	const std::vector<float> scalarC{makeRandomVector(elementCount, -2.0f, 2.0f, 303)};
+	const std::vector<float> scalarD{makeRandomVector(elementCount, -2.0f, 2.0f, 304)};
+	const std::vector<float> scalarE{makeRandomVector(elementCount, -2.0f, 2.0f, 305)};
+	const std::vector<float> scalarF{makeRandomVector(elementCount, -2.0f, 2.0f, 306)};
+
+	std::vector<float> scalarOut(elementCount);
+
+	Timer scalarTimer{};
+
+	for (int i{}; i < repeatCount; ++i) {
+		executeScalarHeavyExpression(scalarA, scalarB, scalarC, scalarD, scalarE, scalarF,
+		                             scalarOut);
+	}
+
+	const double scalarMs{scalarTimer.elapsedMilliseconds()};
+
+	Engine manualEngine{};
+	Array manualA{manualEngine, scalarA};
+	Array manualB{manualEngine, scalarB};
+	Array manualC{manualEngine, scalarC};
+	Array manualD{manualEngine, scalarD};
+	Array manualE{manualEngine, scalarE};
+	Array manualF{manualEngine, scalarF};
+	Array manualOut{manualEngine, elementCount};
+
+	Timer manualTimer{};
+
+	for (int i{}; i < repeatCount; ++i) {
+		executeManualHeavyExpression(manualA, manualB, manualC, manualD, manualE, manualF,
+		                             manualOut);
+	}
+
+	const double manualMs{manualTimer.elapsedMilliseconds()};
+
+	std::vector<float> directXMathOut(elementCount);
+
+	Timer directXMathTimer{};
+
+	for (int i{}; i < repeatCount; ++i) {
+		executeDirectXMathHeavyExpression(scalarA, scalarB, scalarC, scalarD, scalarE,
+		                                  scalarF, directXMathOut);
+	}
+
+	const double directXMathMs{directXMathTimer.elapsedMilliseconds()};
+
+	Engine expressionEngine{};
+	Array expressionA{expressionEngine, scalarA};
+	Array expressionB{expressionEngine, scalarB};
+	Array expressionC{expressionEngine, scalarC};
+	Array expressionD{expressionEngine, scalarD};
+	Array expressionE{expressionEngine, scalarE};
+	Array expressionF{expressionEngine, scalarF};
+	Array expressionOut{expressionEngine, elementCount};
+
+	Timer expressionTimer{};
+
+	for (int i{}; i < repeatCount; ++i) {
+		executeExpressionHeavyExpression(expressionEngine, expressionA, expressionB,
+		                                 expressionC, expressionD, expressionE,
+		                                 expressionF, expressionOut);
+	}
+
+	const double expressionMs{expressionTimer.elapsedMilliseconds()};
+
+	std::vector<float> manualResult{};
+	std::vector<float> expressionResult{};
+	manualOut.copyTo(manualResult);
+	expressionOut.copyTo(expressionResult);
+
+	HeavyExpressionBenchmarkResult result{};
+	result.elementCount = elementCount;
+	result.repeatCount = repeatCount;
+	result.scalarMs = scalarMs;
+	result.manualSimdMs = manualMs;
+	result.directXMathMs = directXMathMs;
+	result.expressionMs = expressionMs;
+	result.manualSimdError = maxAbsError(scalarOut, manualResult);
+	result.directXMathError = maxAbsError(scalarOut, directXMathOut);
+	result.expressionError = maxAbsError(scalarOut, expressionResult);
 	return result;
 }
 }
