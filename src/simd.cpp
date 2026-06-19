@@ -8,60 +8,87 @@
 
 namespace rice::simd
 {
+using internal::addBlock;
 using internal::Assignment;
 using internal::AssignmentKind;
 using internal::CompileContext;
 using internal::CompileGroup;
+using internal::divBlock;
 using internal::ExprNode;
 using internal::FloatArray;
 using internal::FusionPlan;
 using internal::KeyIndex;
+using internal::loadAlignedBlock;
+using internal::loadUnalignedBlock;
 using internal::MAX_REGISTERS;
+using internal::mulBlock;
+using internal::multiplyAddBlock;
+using internal::negativeMultiplyAddBlock;
 using internal::NodeKind;
 using internal::PendingStore;
 using internal::PendingStoreKind;
 using internal::PlanCacheKey;
+using internal::set1Block;
+using internal::SIMD_ALIGNMENT;
 using internal::SIMD_WIDTH;
+using internal::SimdBlock;
+using internal::storeAlignedBlock;
+using internal::storeUnalignedBlock;
+using internal::subBlock;
 using internal::ValueKind;
 using internal::ValueRef;
 using internal::Variable;
+using internal::zeroBlock;
 
 internal::FloatArray::FloatArray(std::size_t elementCount) { resize(elementCount); }
 
 void internal::FloatArray::resize(std::size_t elementCount)
 {
 	elementCount_ = elementCount;
-	blocks_.assign((elementCount + SIMD_WIDTH - 1) / SIMD_WIDTH, _mm256_setzero_ps());
+	blocks_.assign((elementCount + SIMD_WIDTH - 1) / SIMD_WIDTH, zeroBlock());
 }
 
 std::size_t internal::FloatArray::elementCount() const noexcept { return elementCount_; }
 
 std::size_t internal::FloatArray::blockCount() const noexcept { return blocks_.size(); }
 
-__m256 &internal::FloatArray::block(std::size_t index) noexcept { return blocks_[index]; }
+SimdBlock &internal::FloatArray::block(std::size_t index) noexcept { return blocks_[index]; }
 
-const __m256 &internal::FloatArray::block(std::size_t index) const noexcept
+const SimdBlock &internal::FloatArray::block(std::size_t index) const noexcept
 {
 	return blocks_[index];
 }
 
-__m256 *internal::FloatArray::data() noexcept { return blocks_.data(); }
+SimdBlock *internal::FloatArray::data() noexcept { return blocks_.data(); }
 
-const __m256 *internal::FloatArray::data() const noexcept { return blocks_.data(); }
+const SimdBlock *internal::FloatArray::data() const noexcept { return blocks_.data(); }
 
 void internal::FloatArray::fill(float value) noexcept
 {
-	const __m256 block{_mm256_set1_ps(value)};
+	const SimdBlock block{set1Block(value)};
 
-	for (__m256 &stored : blocks_) {
+	for (SimdBlock &stored : blocks_) {
 		stored = block;
 	}
 }
 
 void internal::FloatArray::assign(std::size_t elementCount, float value)
 {
-	resize(elementCount);
+	if (elementCount_ != elementCount) {
+		resize(elementCount);
+	}
+
 	fill(value);
+}
+
+void internal::FloatArray::copyFrom(const FloatArray &source)
+{
+	if (elementCount_ != source.elementCount_) {
+		*this = source;
+		return;
+	}
+
+	std::copy(source.blocks_.begin(), source.blocks_.end(), blocks_.begin());
 }
 
 void internal::FloatArray::copyFrom(const std::vector<float> &values)
@@ -78,11 +105,21 @@ void internal::FloatArray::push_back(float value)
 {
 	const std::size_t index{elementCount_};
 	if (index % SIMD_WIDTH == 0) {
-		blocks_.push_back(_mm256_setzero_ps());
+		blocks_.push_back(zeroBlock());
 	}
 
 	++elementCount_;
 	setElement(index, value);
+}
+
+float internal::FloatArray::element(std::size_t index) const noexcept
+{
+	alignas(SIMD_ALIGNMENT) float temp[SIMD_WIDTH]{};
+	const std::size_t blockIndex{index / SIMD_WIDTH};
+	const std::size_t lane{index % SIMD_WIDTH};
+
+	storeAlignedBlock(temp, blocks_[blockIndex]);
+	return temp[lane];
 }
 
 void internal::FloatArray::copyTo(std::vector<float> &out) const
@@ -94,7 +131,7 @@ void internal::FloatArray::copyTo(std::vector<float> &out) const
 
 	const std::size_t fullBlocks{elementCount_ / SIMD_WIDTH};
 	for (std::size_t blockIndex{}; blockIndex < fullBlocks; ++blockIndex) {
-		_mm256_storeu_ps(out.data() + blockIndex * SIMD_WIDTH, blocks_[blockIndex]);
+		storeUnalignedBlock(out.data() + blockIndex * SIMD_WIDTH, blocks_[blockIndex]);
 	}
 
 	const std::size_t tailCount{elementCount_ % SIMD_WIDTH};
@@ -102,8 +139,8 @@ void internal::FloatArray::copyTo(std::vector<float> &out) const
 		return;
 	}
 
-	alignas(32) float temp[SIMD_WIDTH]{};
-	_mm256_store_ps(temp, blocks_[fullBlocks]);
+	alignas(SIMD_ALIGNMENT) float temp[SIMD_WIDTH]{};
+	storeAlignedBlock(temp, blocks_[fullBlocks]);
 
 	const std::size_t offset{fullBlocks * SIMD_WIDTH};
 	for (std::size_t lane{}; lane < tailCount; ++lane) {
@@ -113,35 +150,37 @@ void internal::FloatArray::copyTo(std::vector<float> &out) const
 
 void internal::FloatArray::copyFrom(const float *values, std::size_t count)
 {
-	resize(count);
+	if (elementCount_ != count) {
+		resize(count);
+	}
 
 	const std::size_t fullBlocks{count / SIMD_WIDTH};
 	for (std::size_t blockIndex{}; blockIndex < fullBlocks; ++blockIndex) {
-		blocks_[blockIndex] = _mm256_loadu_ps(values + blockIndex * SIMD_WIDTH);
+		blocks_[blockIndex] = loadUnalignedBlock(values + blockIndex * SIMD_WIDTH);
 	}
 
 	const std::size_t tailCount{count % SIMD_WIDTH};
 	if (tailCount != 0) {
-		alignas(32) float temp[SIMD_WIDTH]{};
+		alignas(SIMD_ALIGNMENT) float temp[SIMD_WIDTH]{};
 		const std::size_t offset{fullBlocks * SIMD_WIDTH};
 
 		for (std::size_t lane{}; lane < tailCount; ++lane) {
 			temp[lane] = values[offset + lane];
 		}
 
-		blocks_[fullBlocks] = _mm256_load_ps(temp);
+		blocks_[fullBlocks] = loadAlignedBlock(temp);
 	}
 }
 
 void internal::FloatArray::setElement(std::size_t index, float value) noexcept
 {
-	alignas(32) float temp[SIMD_WIDTH]{};
+	alignas(SIMD_ALIGNMENT) float temp[SIMD_WIDTH]{};
 	const std::size_t blockIndex{index / SIMD_WIDTH};
 	const std::size_t lane{index % SIMD_WIDTH};
 
-	_mm256_store_ps(temp, blocks_[blockIndex]);
+	storeAlignedBlock(temp, blocks_[blockIndex]);
 	temp[lane] = value;
-	blocks_[blockIndex] = _mm256_load_ps(temp);
+	blocks_[blockIndex] = loadAlignedBlock(temp);
 }
 
 internal::Variable::Variable(Engine *engine, FloatArray *array) noexcept
@@ -226,6 +265,13 @@ void requireCompoundAssignmentTarget(const Array &target)
 	if (target.elementCount() == 0) {
 		throw std::invalid_argument{"複合代入の左辺配列に要素がありません。resize()"
 		                            "や代入でサイズを設定してください。"};
+	}
+}
+
+void requireElementIndex(const Array &array, std::size_t index)
+{
+	if (index >= array.size()) {
+		throw std::out_of_range{"Arrayの要素番号が範囲外です。"};
 	}
 }
 }
@@ -362,7 +408,7 @@ void Array::copyFrom(const Array &source)
 {
 	assert(impl_ != nullptr);
 	assert(source.impl_ != nullptr);
-	impl_->storage = source.impl_->storage;
+	impl_->storage.copyFrom(source.impl_->storage);
 }
 
 void Array::copyFrom(const std::vector<float> &values)
@@ -381,6 +427,54 @@ void Array::push_back(float value)
 {
 	assert(impl_ != nullptr);
 	impl_->storage.push_back(value);
+}
+
+Array::ElementProxy::ElementProxy(Array &array, std::size_t index) noexcept
+    : array_{&array}, index_{index}
+{
+}
+
+Array::ElementProxy &Array::ElementProxy::operator=(float value)
+{
+	assert(array_ != nullptr);
+	array_->set(index_, value);
+	return *this;
+}
+
+Array::ElementProxy &Array::ElementProxy::operator=(const ElementProxy &value)
+{
+	return *this = static_cast<float>(value);
+}
+
+Array::ElementProxy::operator float() const
+{
+	assert(array_ != nullptr);
+	return array_->get(index_);
+}
+
+float Array::get(std::size_t index) const
+{
+	assert(impl_ != nullptr);
+	requireElementIndex(*this, index);
+	return impl_->storage.element(index);
+}
+
+void Array::set(std::size_t index, float value)
+{
+	assert(impl_ != nullptr);
+	requireElementIndex(*this, index);
+	impl_->storage.setElement(index, value);
+}
+
+Array::ElementProxy Array::operator[](std::size_t index)
+{
+	requireElementIndex(*this, index);
+	return ElementProxy{*this, index};
+}
+
+float Array::operator[](std::size_t index) const
+{
+	return get(index);
 }
 
 std::size_t Array::elementCount() const noexcept
@@ -421,362 +515,475 @@ std::size_t Expression::nodeId() const noexcept { return nodeId_; }
 
 namespace
 {
-void executeAddRR(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeAddRR(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::AddRR &op{plan.addRR[index]};
-	regs[op.dst] = _mm256_add_ps(regs[op.a], regs[op.b]);
+	regs[op.dst] = addBlock(regs[op.a], regs[op.b]);
 }
 
-void executeAddRA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeAddRA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::AddRA &op{plan.addRA[index]};
-	regs[op.dst] = _mm256_add_ps(regs[op.a], op.b[blockIndex]);
+	regs[op.dst] = addBlock(regs[op.a], op.b[blockIndex]);
 }
 
-void executeAddAR(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeAddAR(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::AddAR &op{plan.addAR[index]};
-	regs[op.dst] = _mm256_add_ps(op.a[blockIndex], regs[op.b]);
+	regs[op.dst] = addBlock(op.a[blockIndex], regs[op.b]);
 }
 
-void executeAddAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeAddAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::AddAA &op{plan.addAA[index]};
-	regs[op.dst] = _mm256_add_ps(op.a[blockIndex], op.b[blockIndex]);
+	regs[op.dst] = addBlock(op.a[blockIndex], op.b[blockIndex]);
 }
 
-void executeAddRS(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeAddRS(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::AddRS &op{plan.addRS[index]};
-	regs[op.dst] = _mm256_add_ps(regs[op.a], op.b);
+	regs[op.dst] = addBlock(regs[op.a], op.b);
 }
 
-void executeAddAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeAddAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::AddAS &op{plan.addAS[index]};
-	regs[op.dst] = _mm256_add_ps(op.a[blockIndex], op.b);
+	regs[op.dst] = addBlock(op.a[blockIndex], op.b);
 }
 
-void executeSubRR(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeSubRR(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::SubRR &op{plan.subRR[index]};
-	regs[op.dst] = _mm256_sub_ps(regs[op.a], regs[op.b]);
+	regs[op.dst] = subBlock(regs[op.a], regs[op.b]);
 }
 
-void executeSubRA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeSubRA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::SubRA &op{plan.subRA[index]};
-	regs[op.dst] = _mm256_sub_ps(regs[op.a], op.b[blockIndex]);
+	regs[op.dst] = subBlock(regs[op.a], op.b[blockIndex]);
 }
 
-void executeSubAR(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeSubAR(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::SubAR &op{plan.subAR[index]};
-	regs[op.dst] = _mm256_sub_ps(op.a[blockIndex], regs[op.b]);
+	regs[op.dst] = subBlock(op.a[blockIndex], regs[op.b]);
 }
 
-void executeSubAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeSubAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::SubAA &op{plan.subAA[index]};
-	regs[op.dst] = _mm256_sub_ps(op.a[blockIndex], op.b[blockIndex]);
+	regs[op.dst] = subBlock(op.a[blockIndex], op.b[blockIndex]);
 }
 
-void executeSubRS(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeSubRS(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::SubRS &op{plan.subRS[index]};
-	regs[op.dst] = _mm256_sub_ps(regs[op.a], op.b);
+	regs[op.dst] = subBlock(regs[op.a], op.b);
 }
 
-void executeSubAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeSubAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::SubAS &op{plan.subAS[index]};
-	regs[op.dst] = _mm256_sub_ps(op.a[blockIndex], op.b);
+	regs[op.dst] = subBlock(op.a[blockIndex], op.b);
 }
 
-void executeSubSR(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeSubSR(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::SubSR &op{plan.subSR[index]};
-	regs[op.dst] = _mm256_sub_ps(op.a, regs[op.b]);
+	regs[op.dst] = subBlock(op.a, regs[op.b]);
 }
 
-void executeSubSA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeSubSA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::SubSA &op{plan.subSA[index]};
-	regs[op.dst] = _mm256_sub_ps(op.a, op.b[blockIndex]);
+	regs[op.dst] = subBlock(op.a, op.b[blockIndex]);
 }
 
-void executeMulRR(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeMulRR(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::MulRR &op{plan.mulRR[index]};
-	regs[op.dst] = _mm256_mul_ps(regs[op.a], regs[op.b]);
+	regs[op.dst] = mulBlock(regs[op.a], regs[op.b]);
 }
 
-void executeMulRA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeMulRA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::MulRA &op{plan.mulRA[index]};
-	regs[op.dst] = _mm256_mul_ps(regs[op.a], op.b[blockIndex]);
+	regs[op.dst] = mulBlock(regs[op.a], op.b[blockIndex]);
 }
 
-void executeMulAR(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeMulAR(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::MulAR &op{plan.mulAR[index]};
-	regs[op.dst] = _mm256_mul_ps(op.a[blockIndex], regs[op.b]);
+	regs[op.dst] = mulBlock(op.a[blockIndex], regs[op.b]);
 }
 
-void executeMulAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeMulAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::MulAA &op{plan.mulAA[index]};
-	regs[op.dst] = _mm256_mul_ps(op.a[blockIndex], op.b[blockIndex]);
+	regs[op.dst] = mulBlock(op.a[blockIndex], op.b[blockIndex]);
 }
 
-void executeMulRS(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeMulRS(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::MulRS &op{plan.mulRS[index]};
-	regs[op.dst] = _mm256_mul_ps(regs[op.a], op.b);
+	regs[op.dst] = mulBlock(regs[op.a], op.b);
 }
 
-void executeMulAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeMulAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::MulAS &op{plan.mulAS[index]};
-	regs[op.dst] = _mm256_mul_ps(op.a[blockIndex], op.b);
+	regs[op.dst] = mulBlock(op.a[blockIndex], op.b);
 }
 
-void executeDivRR(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeDivRR(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::DivRR &op{plan.divRR[index]};
-	regs[op.dst] = _mm256_div_ps(regs[op.a], regs[op.b]);
+	regs[op.dst] = divBlock(regs[op.a], regs[op.b]);
 }
 
-void executeDivRA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeDivRA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::DivRA &op{plan.divRA[index]};
-	regs[op.dst] = _mm256_div_ps(regs[op.a], op.b[blockIndex]);
+	regs[op.dst] = divBlock(regs[op.a], op.b[blockIndex]);
 }
 
-void executeDivAR(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeDivAR(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::DivAR &op{plan.divAR[index]};
-	regs[op.dst] = _mm256_div_ps(op.a[blockIndex], regs[op.b]);
+	regs[op.dst] = divBlock(op.a[blockIndex], regs[op.b]);
 }
 
-void executeDivAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeDivAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::DivAA &op{plan.divAA[index]};
-	regs[op.dst] = _mm256_div_ps(op.a[blockIndex], op.b[blockIndex]);
+	regs[op.dst] = divBlock(op.a[blockIndex], op.b[blockIndex]);
 }
 
-void executeDivRS(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeDivRS(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::DivRS &op{plan.divRS[index]};
-	regs[op.dst] = _mm256_div_ps(regs[op.a], op.b);
+	regs[op.dst] = divBlock(regs[op.a], op.b);
 }
 
-void executeDivAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeDivAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::DivAS &op{plan.divAS[index]};
-	regs[op.dst] = _mm256_div_ps(op.a[blockIndex], op.b);
+	regs[op.dst] = divBlock(op.a[blockIndex], op.b);
 }
 
-void executeDivSR(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeDivSR(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::DivSR &op{plan.divSR[index]};
-	regs[op.dst] = _mm256_div_ps(op.a, regs[op.b]);
+	regs[op.dst] = divBlock(op.a, regs[op.b]);
 }
 
-void executeDivSA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeDivSA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                   std::size_t index) noexcept
 {
 	const internal::DivSA &op{plan.divSA[index]};
-	regs[op.dst] = _mm256_div_ps(op.a, op.b[blockIndex]);
+	regs[op.dst] = divBlock(op.a, op.b[blockIndex]);
 }
 
-void executeFmaRRR(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeFmaRRR(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                    std::size_t index) noexcept
 {
 	const internal::FmaRRR &op{plan.fmaRRR[index]};
-	regs[op.dst] = _mm256_fmadd_ps(regs[op.a], regs[op.b], regs[op.c]);
+	regs[op.dst] = multiplyAddBlock(regs[op.a], regs[op.b], regs[op.c]);
 }
 
-void executeFmaRRA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeFmaRRA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                    std::size_t index) noexcept
 {
 	const internal::FmaRRA &op{plan.fmaRRA[index]};
-	regs[op.dst] = _mm256_fmadd_ps(regs[op.a], regs[op.b], op.c[blockIndex]);
+	regs[op.dst] = multiplyAddBlock(regs[op.a], regs[op.b], op.c[blockIndex]);
 }
 
-void executeFmaRAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeFmaRAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                    std::size_t index) noexcept
 {
 	const internal::FmaRAA &op{plan.fmaRAA[index]};
-	regs[op.dst] = _mm256_fmadd_ps(regs[op.a], op.b[blockIndex], op.c[blockIndex]);
+	regs[op.dst] = multiplyAddBlock(regs[op.a], op.b[blockIndex], op.c[blockIndex]);
 }
 
-void executeFmaAAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeFmaAAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                    std::size_t index) noexcept
 {
 	const internal::FmaAAA &op{plan.fmaAAA[index]};
-	regs[op.dst] = _mm256_fmadd_ps(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
+	regs[op.dst] = multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
 }
 
-void executeFmaASA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeFmaASA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                    std::size_t index) noexcept
 {
 	const internal::FmaASA &op{plan.fmaASA[index]};
-	regs[op.dst] = _mm256_fmadd_ps(op.a[blockIndex], op.b, op.c[blockIndex]);
+	regs[op.dst] = multiplyAddBlock(op.a[blockIndex], op.b, op.c[blockIndex]);
 }
 
-void executeFmaRAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeFmaRAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                    std::size_t index) noexcept
 {
 	const internal::FmaRAS &op{plan.fmaRAS[index]};
-	regs[op.dst] = _mm256_fmadd_ps(regs[op.a], op.b[blockIndex], op.c);
+	regs[op.dst] = multiplyAddBlock(regs[op.a], op.b[blockIndex], op.c);
 }
 
-void executeFmaRSA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeFmaRSA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                    std::size_t index) noexcept
 {
 	const internal::FmaRSA &op{plan.fmaRSA[index]};
-	regs[op.dst] = _mm256_fmadd_ps(regs[op.a], op.b, op.c[blockIndex]);
+	regs[op.dst] = multiplyAddBlock(regs[op.a], op.b, op.c[blockIndex]);
 }
 
-void executeStoreFmaAAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreFmaAAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                         std::size_t index) noexcept
 {
 	const internal::StoreFmaAAA &op{plan.storeFmaAAA[index]};
-	op.out[blockIndex] = _mm256_fmadd_ps(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
+	op.out[blockIndex] = multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
 }
 
-void executeStoreFmaASA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreFmaASA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                         std::size_t index) noexcept
 {
 	const internal::StoreFmaASA &op{plan.storeFmaASA[index]};
-	op.out[blockIndex] = _mm256_fmadd_ps(op.a[blockIndex], op.b, op.c[blockIndex]);
+	op.out[blockIndex] = multiplyAddBlock(op.a[blockIndex], op.b, op.c[blockIndex]);
 }
 
-void executeStoreAddAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreFmaRRR(const internal::FusionPlanData &plan, std::size_t blockIndex,
+                        SimdBlock *regs, std::size_t index) noexcept
+{
+	const internal::StoreFmaRRR &op{plan.storeFmaRRR[index]};
+	op.out[blockIndex] = multiplyAddBlock(regs[op.a], regs[op.b], regs[op.c]);
+}
+
+void executeStoreFmaRRA(const internal::FusionPlanData &plan, std::size_t blockIndex,
+                        SimdBlock *regs, std::size_t index) noexcept
+{
+	const internal::StoreFmaRRA &op{plan.storeFmaRRA[index]};
+	op.out[blockIndex] = multiplyAddBlock(regs[op.a], regs[op.b], op.c[blockIndex]);
+}
+
+void executeStoreFmaRAA(const internal::FusionPlanData &plan, std::size_t blockIndex,
+                        SimdBlock *regs, std::size_t index) noexcept
+{
+	const internal::StoreFmaRAA &op{plan.storeFmaRAA[index]};
+	op.out[blockIndex] = multiplyAddBlock(regs[op.a], op.b[blockIndex], op.c[blockIndex]);
+}
+
+void executeStoreFmaRAS(const internal::FusionPlanData &plan, std::size_t blockIndex,
+                        SimdBlock *regs, std::size_t index) noexcept
+{
+	const internal::StoreFmaRAS &op{plan.storeFmaRAS[index]};
+	op.out[blockIndex] = multiplyAddBlock(regs[op.a], op.b[blockIndex], op.c);
+}
+
+void executeStoreFmaRSA(const internal::FusionPlanData &plan, std::size_t blockIndex,
+                        SimdBlock *regs, std::size_t index) noexcept
+{
+	const internal::StoreFmaRSA &op{plan.storeFmaRSA[index]};
+	op.out[blockIndex] = multiplyAddBlock(regs[op.a], op.b, op.c[blockIndex]);
+}
+
+void executeStoreNegFmaAAA(const internal::FusionPlanData &plan, std::size_t blockIndex,
+                           SimdBlock *, std::size_t index) noexcept
+{
+	const internal::StoreNegFmaAAA &op{plan.storeNegFmaAAA[index]};
+	op.out[blockIndex] =
+	    negativeMultiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
+}
+
+void executeStoreNegFmaASA(const internal::FusionPlanData &plan, std::size_t blockIndex,
+                           SimdBlock *, std::size_t index) noexcept
+{
+	const internal::StoreNegFmaASA &op{plan.storeNegFmaASA[index]};
+	op.out[blockIndex] = negativeMultiplyAddBlock(op.a[blockIndex], op.b, op.c[blockIndex]);
+}
+
+void executeStoreAddAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinaryAA &op{plan.storeAddAA[index]};
-	op.out[blockIndex] = _mm256_add_ps(op.a[blockIndex], op.b[blockIndex]);
+	op.out[blockIndex] = addBlock(op.a[blockIndex], op.b[blockIndex]);
 }
 
-void executeStoreAddAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreAddAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinaryAS &op{plan.storeAddAS[index]};
-	op.out[blockIndex] = _mm256_add_ps(op.a[blockIndex], op.b);
+	op.out[blockIndex] = addBlock(op.a[blockIndex], op.b);
 }
 
-void executeStoreSubAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreSubAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinaryAA &op{plan.storeSubAA[index]};
-	op.out[blockIndex] = _mm256_sub_ps(op.a[blockIndex], op.b[blockIndex]);
+	op.out[blockIndex] = subBlock(op.a[blockIndex], op.b[blockIndex]);
 }
 
-void executeStoreSubAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreSubAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinaryAS &op{plan.storeSubAS[index]};
-	op.out[blockIndex] = _mm256_sub_ps(op.a[blockIndex], op.b);
+	op.out[blockIndex] = subBlock(op.a[blockIndex], op.b);
 }
 
-void executeStoreSubSA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreSubSA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinarySA &op{plan.storeSubSA[index]};
-	op.out[blockIndex] = _mm256_sub_ps(op.a, op.b[blockIndex]);
+	op.out[blockIndex] = subBlock(op.a, op.b[blockIndex]);
 }
 
-void executeStoreMulAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreMulAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinaryAA &op{plan.storeMulAA[index]};
-	op.out[blockIndex] = _mm256_mul_ps(op.a[blockIndex], op.b[blockIndex]);
+	op.out[blockIndex] = mulBlock(op.a[blockIndex], op.b[blockIndex]);
 }
 
-void executeStoreMulAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreMulAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinaryAS &op{plan.storeMulAS[index]};
-	op.out[blockIndex] = _mm256_mul_ps(op.a[blockIndex], op.b);
+	op.out[blockIndex] = mulBlock(op.a[blockIndex], op.b);
 }
 
-void executeStoreDivAA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreDivAA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinaryAA &op{plan.storeDivAA[index]};
-	op.out[blockIndex] = _mm256_div_ps(op.a[blockIndex], op.b[blockIndex]);
+	op.out[blockIndex] = divBlock(op.a[blockIndex], op.b[blockIndex]);
 }
 
-void executeStoreDivAS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreDivAS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinaryAS &op{plan.storeDivAS[index]};
-	op.out[blockIndex] = _mm256_div_ps(op.a[blockIndex], op.b);
+	op.out[blockIndex] = divBlock(op.a[blockIndex], op.b);
 }
 
-void executeStoreDivSA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreDivSA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                        std::size_t index) noexcept
 {
 	const internal::StoreBinarySA &op{plan.storeDivSA[index]};
-	op.out[blockIndex] = _mm256_div_ps(op.a, op.b[blockIndex]);
+	op.out[blockIndex] = divBlock(op.a, op.b[blockIndex]);
 }
 
-void executeSetS(const internal::FusionPlanData &plan, std::size_t, __m256 *regs,
+void executeSetS(const internal::FusionPlanData &plan, std::size_t, SimdBlock *regs,
                  std::size_t index) noexcept
 {
 	const internal::SetS &op{plan.setS[index]};
 	regs[op.dst] = op.a;
 }
 
-void executeStoreR(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *regs,
+void executeStoreR(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
                    std::size_t index) noexcept
 {
 	const internal::StoreR &op{plan.storeR[index]};
 	op.out[blockIndex] = regs[op.a];
 }
 
-void executeStoreA(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreA(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                    std::size_t index) noexcept
 {
 	const internal::StoreA &op{plan.storeA[index]};
 	op.out[blockIndex] = op.a[blockIndex];
 }
 
-void executeStoreS(const internal::FusionPlanData &plan, std::size_t blockIndex, __m256 *,
+void executeStoreS(const internal::FusionPlanData &plan, std::size_t blockIndex, SimdBlock *,
                    std::size_t index) noexcept
 {
 	const internal::StoreS &op{plan.storeS[index]};
 	op.out[blockIndex] = op.a;
 }
+
+void executeDirectStoresBlock(const internal::FusionPlanData &plan, std::size_t blockIndex) noexcept
+{
+	for (const internal::StoreFmaAAA &op : plan.storeFmaAAA) {
+		op.out[blockIndex] =
+		    multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
+	}
+
+	for (const internal::StoreFmaASA &op : plan.storeFmaASA) {
+		op.out[blockIndex] = multiplyAddBlock(op.a[blockIndex], op.b, op.c[blockIndex]);
+	}
+
+	for (const internal::StoreNegFmaAAA &op : plan.storeNegFmaAAA) {
+		op.out[blockIndex] =
+		    negativeMultiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
+	}
+
+	for (const internal::StoreNegFmaASA &op : plan.storeNegFmaASA) {
+		op.out[blockIndex] =
+		    negativeMultiplyAddBlock(op.a[blockIndex], op.b, op.c[blockIndex]);
+	}
+
+	for (const internal::StoreBinaryAA &op : plan.storeAddAA) {
+		op.out[blockIndex] = addBlock(op.a[blockIndex], op.b[blockIndex]);
+	}
+
+	for (const internal::StoreBinaryAS &op : plan.storeAddAS) {
+		op.out[blockIndex] = addBlock(op.a[blockIndex], op.b);
+	}
+
+	for (const internal::StoreBinaryAA &op : plan.storeSubAA) {
+		op.out[blockIndex] = subBlock(op.a[blockIndex], op.b[blockIndex]);
+	}
+
+	for (const internal::StoreBinaryAS &op : plan.storeSubAS) {
+		op.out[blockIndex] = subBlock(op.a[blockIndex], op.b);
+	}
+
+	for (const internal::StoreBinarySA &op : plan.storeSubSA) {
+		op.out[blockIndex] = subBlock(op.a, op.b[blockIndex]);
+	}
+
+	for (const internal::StoreBinaryAA &op : plan.storeMulAA) {
+		op.out[blockIndex] = mulBlock(op.a[blockIndex], op.b[blockIndex]);
+	}
+
+	for (const internal::StoreBinaryAS &op : plan.storeMulAS) {
+		op.out[blockIndex] = mulBlock(op.a[blockIndex], op.b);
+	}
+
+	for (const internal::StoreBinaryAA &op : plan.storeDivAA) {
+		op.out[blockIndex] = divBlock(op.a[blockIndex], op.b[blockIndex]);
+	}
+
+	for (const internal::StoreBinaryAS &op : plan.storeDivAS) {
+		op.out[blockIndex] = divBlock(op.a[blockIndex], op.b);
+	}
+
+	for (const internal::StoreBinarySA &op : plan.storeDivSA) {
+		op.out[blockIndex] = divBlock(op.a, op.b[blockIndex]);
+	}
+}
+
 }
 
 internal::FusionPlan::FusionPlan() = default;
@@ -785,22 +992,42 @@ internal::FusionPlan::~FusionPlan() noexcept = default;
 
 void internal::FusionPlan::execute() const noexcept
 {
-	__m256 regs[MAX_REGISTERS];
+	if (data_.directOnly) {
+		for (std::size_t blockIndex{}; blockIndex < data_.blockCount; ++blockIndex) {
+			executeDirectStoresBlock(data_, blockIndex);
+		}
+
+		return;
+	}
+
+	SimdBlock regs[MAX_REGISTERS];
 
 	for (std::size_t blockIndex{}; blockIndex < data_.blockCount; ++blockIndex) {
 		executeBlock(blockIndex, regs);
 	}
 }
 
-void internal::FusionPlan::executeBlock(std::size_t blockIndex, __m256 *regs) const noexcept
+void internal::FusionPlan::executeBlock(std::size_t blockIndex, SimdBlock *regs) const noexcept
 {
+	if (data_.directOnly) {
+		executeDirectStoresBlock(data_, blockIndex);
+		return;
+	}
+
 	for (const internal::OpRef &ref : data_.ops) {
 		assert(ref.execute != nullptr);
 		ref.execute(data_, blockIndex, regs, ref.index);
 	}
 }
 
-std::size_t internal::FusionPlan::instructionCount() const noexcept { return data_.ops.size(); }
+std::size_t internal::FusionPlan::instructionCount() const noexcept
+{
+	if (data_.directOnly) {
+		return data_.directInstructionCount;
+	}
+
+	return data_.ops.size();
+}
 
 int internal::FusionPlan::registerCount() const noexcept { return data_.maxRegisterCount; }
 
@@ -842,7 +1069,7 @@ void internal::ScheduledPlan::execute() const noexcept
 		return;
 	}
 
-	__m256 regs[MAX_REGISTERS];
+	SimdBlock regs[MAX_REGISTERS];
 
 	for (std::size_t blockIndex{}; blockIndex < data_.blockCount; ++blockIndex) {
 		for (const FusionPlan &stage : data_.stages) {
@@ -978,6 +1205,7 @@ struct Compiler {
 		}
 
 		engine.impl_->nodes.reserve(newCapacity);
+		engine.impl_->nodeKeyIndex.reserve(newCapacity);
 	}
 
 	static void rememberExpressionReserve(Engine &engine) noexcept
@@ -1064,16 +1292,55 @@ struct Compiler {
 	static Expression appendNode(Engine &engine, const ExprNode &node)
 	{
 		const std::vector<ExprNode> &nodes{engine.impl_->nodes};
+		constexpr std::size_t fastLookbackCount{16};
+		std::size_t fastBegin{};
+		if (nodes.size() > fastLookbackCount) {
+			fastBegin = nodes.size() - fastLookbackCount;
+		}
+
 		for (std::size_t index{nodes.size()}; index > 0; --index) {
 			const std::size_t nodeId{index - 1};
+			if (nodeId < fastBegin) {
+				break;
+			}
+
 			if (sameNode(nodes[nodeId], node)) {
 				return Expression{&engine, nodeId};
+			}
+		}
+
+		std::vector<KeyIndex> &nodeIndex{engine.impl_->nodeKeyIndex};
+		const KeyIndex lookup{node.key, 0};
+		const auto first{std::lower_bound(
+		    nodeIndex.begin(), nodeIndex.end(), lookup,
+		    [](const KeyIndex &lhs, const KeyIndex &rhs) {
+			    if (lhs.key != rhs.key) {
+				    return lhs.key < rhs.key;
+			    }
+
+			    return lhs.node < rhs.node;
+		    })};
+
+		for (auto it{first}; it != nodeIndex.end() && it->key == node.key; ++it) {
+			if (sameNode(nodes[it->node], node)) {
+				return Expression{&engine, it->node};
 			}
 		}
 
 		reserveNodesFor(engine, 1);
 		const std::size_t nodeId{engine.impl_->nodes.size()};
 		engine.impl_->nodes.push_back(node);
+		const KeyIndex insertLookup{node.key, nodeId};
+		const auto insertPosition{std::lower_bound(
+		    nodeIndex.begin(), nodeIndex.end(), insertLookup,
+		    [](const KeyIndex &lhs, const KeyIndex &rhs) {
+			    if (lhs.key != rhs.key) {
+				    return lhs.key < rhs.key;
+			    }
+
+			    return lhs.node < rhs.node;
+		    })};
+		nodeIndex.insert(insertPosition, insertLookup);
 		return Expression{&engine, nodeId};
 	}
 
@@ -1353,22 +1620,8 @@ struct Compiler {
 			return context;
 		}
 
-		std::vector<KeyIndex> &keys{engine.impl_->keyScratch};
-		keys.clear();
-		keys.reserve(nodes.size());
+		const std::vector<KeyIndex> &keys{engine.impl_->nodeKeyIndex};
 		context.groups.reserve(nodes.size());
-
-		for (std::size_t i{}; i < nodes.size(); ++i) {
-			keys.push_back(KeyIndex{nodes[i].key, i});
-		}
-
-		std::sort(keys.begin(), keys.end(), [](const KeyIndex &lhs, const KeyIndex &rhs) {
-			if (lhs.key != rhs.key) {
-				return lhs.key < rhs.key;
-			}
-
-			return lhs.node < rhs.node;
-		});
 
 		for (const KeyIndex &entry : keys) {
 			if (context.groups.empty() || context.groups.back().key != entry.key ||
@@ -1414,7 +1667,7 @@ struct Compiler {
 
 		ValueRef value{};
 		value.kind = ValueKind::Scalar;
-		value.scalar = _mm256_set1_ps(n.scalar);
+		value.scalar = set1Block(n.scalar);
 		value.group = group;
 		value.hasGroup = true;
 		return value;
@@ -1581,6 +1834,14 @@ struct Compiler {
 		const std::size_t index{bucket.size()};
 		bucket.push_back(op);
 		plan.data_.ops.push_back(internal::OpRef{execute, index});
+		plan.data_.directOnly = false;
+	}
+
+	template <typename Op>
+	static void appendDirectStore(FusionPlan &plan, std::vector<Op> &bucket, const Op &op)
+	{
+		bucket.push_back(op);
+		++plan.data_.directInstructionCount;
 	}
 
 	static bool findFmaParts(const Engine &engine, std::size_t nodeId, std::size_t &mulId,
@@ -1606,7 +1867,7 @@ struct Compiler {
 		return false;
 	}
 
-	static bool makeDirectFmaStore(const Engine &engine, __m256 *out, std::size_t nodeId,
+	static bool makeDirectFmaStore(const Engine &engine, SimdBlock *out, std::size_t nodeId,
 	                               PendingStore &store) noexcept
 	{
 		std::size_t mulId{INVALID_NODE};
@@ -1638,21 +1899,21 @@ struct Compiler {
 		if (lhs.kind == NodeKind::Variable && rhs.kind == NodeKind::Scalar) {
 			store.kind = PendingStoreKind::FmaASA;
 			store.a = lhs.array->data();
-			store.bScalar = _mm256_set1_ps(rhs.scalar);
+			store.bScalar = set1Block(rhs.scalar);
 			return true;
 		}
 
 		if (lhs.kind == NodeKind::Scalar && rhs.kind == NodeKind::Variable) {
 			store.kind = PendingStoreKind::FmaASA;
 			store.a = rhs.array->data();
-			store.bScalar = _mm256_set1_ps(lhs.scalar);
+			store.bScalar = set1Block(lhs.scalar);
 			return true;
 		}
 
 		return false;
 	}
 
-	static bool makeDirectBinaryStore(const Engine &engine, __m256 *out, std::size_t nodeId,
+	static bool makeDirectBinaryStore(const Engine &engine, SimdBlock *out, std::size_t nodeId,
 	                                  PendingStore &store) noexcept
 	{
 		const ExprNode &node{engine.impl_->nodes[nodeId]};
@@ -1685,14 +1946,14 @@ struct Compiler {
 			if (lhsArray && rhsScalar) {
 				store.kind = PendingStoreKind::AddAS;
 				store.a = lhs.array->data();
-				store.bScalar = _mm256_set1_ps(rhs.scalar);
+				store.bScalar = set1Block(rhs.scalar);
 				return true;
 			}
 
 			if (lhsScalar && rhsArray) {
 				store.kind = PendingStoreKind::AddAS;
 				store.a = rhs.array->data();
-				store.bScalar = _mm256_set1_ps(lhs.scalar);
+				store.bScalar = set1Block(lhs.scalar);
 				return true;
 			}
 		}
@@ -1708,13 +1969,13 @@ struct Compiler {
 			if (lhsArray && rhsScalar) {
 				store.kind = PendingStoreKind::SubAS;
 				store.a = lhs.array->data();
-				store.bScalar = _mm256_set1_ps(rhs.scalar);
+				store.bScalar = set1Block(rhs.scalar);
 				return true;
 			}
 
 			if (lhsScalar && rhsArray) {
 				store.kind = PendingStoreKind::SubSA;
-				store.bScalar = _mm256_set1_ps(lhs.scalar);
+				store.bScalar = set1Block(lhs.scalar);
 				store.bArray = rhs.array->data();
 				return true;
 			}
@@ -1731,14 +1992,14 @@ struct Compiler {
 			if (lhsArray && rhsScalar) {
 				store.kind = PendingStoreKind::MulAS;
 				store.a = lhs.array->data();
-				store.bScalar = _mm256_set1_ps(rhs.scalar);
+				store.bScalar = set1Block(rhs.scalar);
 				return true;
 			}
 
 			if (lhsScalar && rhsArray) {
 				store.kind = PendingStoreKind::MulAS;
 				store.a = rhs.array->data();
-				store.bScalar = _mm256_set1_ps(lhs.scalar);
+				store.bScalar = set1Block(lhs.scalar);
 				return true;
 			}
 		}
@@ -1754,13 +2015,13 @@ struct Compiler {
 			if (lhsArray && rhsScalar) {
 				store.kind = PendingStoreKind::DivAS;
 				store.a = lhs.array->data();
-				store.bScalar = _mm256_set1_ps(rhs.scalar);
+				store.bScalar = set1Block(rhs.scalar);
 				return true;
 			}
 
 			if (lhsScalar && rhsArray) {
 				store.kind = PendingStoreKind::DivSA;
-				store.bScalar = _mm256_set1_ps(lhs.scalar);
+				store.bScalar = set1Block(lhs.scalar);
 				store.bArray = rhs.array->data();
 				return true;
 			}
@@ -1769,7 +2030,7 @@ struct Compiler {
 		return false;
 	}
 
-	static bool makeDirectStore(const Engine &engine, __m256 *out, std::size_t nodeId,
+	static bool makeDirectStore(const Engine &engine, SimdBlock *out, std::size_t nodeId,
 	                            PendingStore &store) noexcept
 	{
 		if (makeDirectFmaStore(engine, out, nodeId, store)) {
@@ -1779,7 +2040,7 @@ struct Compiler {
 		return makeDirectBinaryStore(engine, out, nodeId, store);
 	}
 
-	static bool makeDirectAddAssignFmaStore(const Engine &engine, __m256 *out,
+	static bool makeDirectAddAssignFmaStore(const Engine &engine, SimdBlock *out,
 	                                        const FloatArray &outputArray, std::size_t nodeId,
 	                                        PendingStore &store) noexcept
 	{
@@ -1805,21 +2066,61 @@ struct Compiler {
 		if (lhs.kind == NodeKind::Variable && rhs.kind == NodeKind::Scalar) {
 			store.kind = PendingStoreKind::FmaASA;
 			store.a = lhs.array->data();
-			store.bScalar = _mm256_set1_ps(rhs.scalar);
+			store.bScalar = set1Block(rhs.scalar);
 			return true;
 		}
 
 		if (lhs.kind == NodeKind::Scalar && rhs.kind == NodeKind::Variable) {
 			store.kind = PendingStoreKind::FmaASA;
 			store.a = rhs.array->data();
-			store.bScalar = _mm256_set1_ps(lhs.scalar);
+			store.bScalar = set1Block(lhs.scalar);
 			return true;
 		}
 
 		return false;
 	}
 
-	static bool makeDirectCompoundBinaryStore(const Engine &engine, __m256 *out,
+	static bool makeDirectSubAssignFmaStore(const Engine &engine, SimdBlock *out,
+	                                        const FloatArray &outputArray, std::size_t nodeId,
+	                                        PendingStore &store) noexcept
+	{
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		if (node.kind != NodeKind::Mul) {
+			return false;
+		}
+
+		const ExprNode &lhs{engine.impl_->nodes[node.lhs]};
+		const ExprNode &rhs{engine.impl_->nodes[node.rhs]};
+
+		store = PendingStore{};
+		store.out = out;
+		store.c = outputArray.data();
+
+		if (lhs.kind == NodeKind::Variable && rhs.kind == NodeKind::Variable) {
+			store.kind = PendingStoreKind::NegFmaAAA;
+			store.a = lhs.array->data();
+			store.bArray = rhs.array->data();
+			return true;
+		}
+
+		if (lhs.kind == NodeKind::Variable && rhs.kind == NodeKind::Scalar) {
+			store.kind = PendingStoreKind::NegFmaASA;
+			store.a = lhs.array->data();
+			store.bScalar = set1Block(rhs.scalar);
+			return true;
+		}
+
+		if (lhs.kind == NodeKind::Scalar && rhs.kind == NodeKind::Variable) {
+			store.kind = PendingStoreKind::NegFmaASA;
+			store.a = rhs.array->data();
+			store.bScalar = set1Block(lhs.scalar);
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool makeDirectCompoundBinaryStore(const Engine &engine, SimdBlock *out,
 	                                          const FloatArray &outputArray,
 	                                          const Assignment &assignment,
 	                                          PendingStore &store) noexcept
@@ -1839,7 +2140,7 @@ struct Compiler {
 		if (rhsArray) {
 			store.bArray = rhs.array->data();
 		} else {
-			store.bScalar = _mm256_set1_ps(rhs.scalar);
+			store.bScalar = set1Block(rhs.scalar);
 		}
 
 		if (assignment.kind == AssignmentKind::AddAssign) {
@@ -1885,7 +2186,7 @@ struct Compiler {
 	                                      PendingStore &store) noexcept
 	{
 		FloatArray &outputArray{assignment.out_->variable.array()};
-		__m256 *out{outputArray.data()};
+		SimdBlock *out{outputArray.data()};
 
 		if (assignment.kind == AssignmentKind::Assign) {
 			return makeDirectStore(engine, out, assignment.expr_.nodeId(), store);
@@ -1897,10 +2198,16 @@ struct Compiler {
 			return true;
 		}
 
+		if (assignment.kind == AssignmentKind::SubAssign &&
+		    makeDirectSubAssignFmaStore(engine, out, outputArray, assignment.expr_.nodeId(),
+		                                store)) {
+			return true;
+		}
+
 		return makeDirectCompoundBinaryStore(engine, out, outputArray, assignment, store);
 	}
 
-	static void emitStore(FusionPlan &plan, __m256 *out, const ValueRef &value,
+	static void emitStore(FusionPlan &plan, SimdBlock *out, const ValueRef &value,
 	                      CompileContext &context)
 	{
 		if (value.kind == ValueKind::Reg) {
@@ -1932,6 +2239,20 @@ struct Compiler {
 		if (store.kind == PendingStoreKind::FmaASA) {
 			appendOp(plan, plan.data_.storeFmaASA, executeStoreFmaASA,
 			         internal::StoreFmaASA{store.out, store.a, store.bScalar, store.c});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::NegFmaAAA) {
+			appendOp(
+			    plan, plan.data_.storeNegFmaAAA, executeStoreNegFmaAAA,
+			    internal::StoreNegFmaAAA{store.out, store.a, store.bArray, store.c});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::NegFmaASA) {
+			appendOp(
+			    plan, plan.data_.storeNegFmaASA, executeStoreNegFmaASA,
+			    internal::StoreNegFmaASA{store.out, store.a, store.bScalar, store.c});
 			return;
 		}
 
@@ -1998,6 +2319,106 @@ struct Compiler {
 		emitStore(plan, store.out, store.value, context);
 	}
 
+	static void emitDirectPendingStore(FusionPlan &plan, const PendingStore &store)
+	{
+		if (store.kind == PendingStoreKind::FmaAAA) {
+			appendDirectStore(
+			    plan, plan.data_.storeFmaAAA,
+			    internal::StoreFmaAAA{store.out, store.a, store.bArray, store.c});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::FmaASA) {
+			appendDirectStore(
+			    plan, plan.data_.storeFmaASA,
+			    internal::StoreFmaASA{store.out, store.a, store.bScalar, store.c});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::NegFmaAAA) {
+			appendDirectStore(
+			    plan, plan.data_.storeNegFmaAAA,
+			    internal::StoreNegFmaAAA{store.out, store.a, store.bArray, store.c});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::NegFmaASA) {
+			appendDirectStore(
+			    plan, plan.data_.storeNegFmaASA,
+			    internal::StoreNegFmaASA{store.out, store.a, store.bScalar, store.c});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::AddAA) {
+			appendDirectStore(
+			    plan, plan.data_.storeAddAA,
+			    internal::StoreBinaryAA{store.out, store.a, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::AddAS) {
+			appendDirectStore(
+			    plan, plan.data_.storeAddAS,
+			    internal::StoreBinaryAS{store.out, store.a, store.bScalar});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::SubAA) {
+			appendDirectStore(
+			    plan, plan.data_.storeSubAA,
+			    internal::StoreBinaryAA{store.out, store.a, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::SubAS) {
+			appendDirectStore(
+			    plan, plan.data_.storeSubAS,
+			    internal::StoreBinaryAS{store.out, store.a, store.bScalar});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::SubSA) {
+			appendDirectStore(
+			    plan, plan.data_.storeSubSA,
+			    internal::StoreBinarySA{store.out, store.bScalar, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::MulAA) {
+			appendDirectStore(
+			    plan, plan.data_.storeMulAA,
+			    internal::StoreBinaryAA{store.out, store.a, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::MulAS) {
+			appendDirectStore(
+			    plan, plan.data_.storeMulAS,
+			    internal::StoreBinaryAS{store.out, store.a, store.bScalar});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::DivAA) {
+			appendDirectStore(
+			    plan, plan.data_.storeDivAA,
+			    internal::StoreBinaryAA{store.out, store.a, store.bArray});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::DivAS) {
+			appendDirectStore(
+			    plan, plan.data_.storeDivAS,
+			    internal::StoreBinaryAS{store.out, store.a, store.bScalar});
+			return;
+		}
+
+		if (store.kind == PendingStoreKind::DivSA) {
+			appendDirectStore(
+			    plan, plan.data_.storeDivSA,
+			    internal::StoreBinarySA{store.out, store.bScalar, store.bArray});
+		}
+	}
+
 	static void emitAdd(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
 	{
 		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg)
@@ -2026,7 +2447,7 @@ struct Compiler {
 			         internal::AddAS{dst, b.array, a.scalar});
 		else
 			appendOp(plan, plan.data_.setS, executeSetS,
-			         internal::SetS{dst, _mm256_add_ps(a.scalar, b.scalar)});
+			         internal::SetS{dst, addBlock(a.scalar, b.scalar)});
 	}
 
 	static void emitSub(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
@@ -2057,7 +2478,7 @@ struct Compiler {
 			         internal::SubSA{dst, a.scalar, b.array});
 		else
 			appendOp(plan, plan.data_.setS, executeSetS,
-			         internal::SetS{dst, _mm256_sub_ps(a.scalar, b.scalar)});
+			         internal::SetS{dst, subBlock(a.scalar, b.scalar)});
 	}
 
 	static void emitMul(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
@@ -2088,7 +2509,7 @@ struct Compiler {
 			         internal::MulAS{dst, b.array, a.scalar});
 		else
 			appendOp(plan, plan.data_.setS, executeSetS,
-			         internal::SetS{dst, _mm256_mul_ps(a.scalar, b.scalar)});
+			         internal::SetS{dst, mulBlock(a.scalar, b.scalar)});
 	}
 
 	static void emitDiv(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
@@ -2119,7 +2540,7 @@ struct Compiler {
 			         internal::DivSA{dst, a.scalar, b.array});
 		else
 			appendOp(plan, plan.data_.setS, executeSetS,
-			         internal::SetS{dst, _mm256_div_ps(a.scalar, b.scalar)});
+			         internal::SetS{dst, divBlock(a.scalar, b.scalar)});
 	}
 
 	static void emitFmaOrFallback(FusionPlan &plan, int dst, const ValueRef &a,
@@ -2166,6 +2587,117 @@ struct Compiler {
 			emitAdd(plan, dst, tempValue, c);
 			plan.releaseRegister(temp);
 		}
+	}
+
+	static bool emitFmaStoreOrFallback(FusionPlan &plan, SimdBlock *out, const ValueRef &a,
+	                                   const ValueRef &b, const ValueRef &c)
+	{
+		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg &&
+		    c.kind == ValueKind::Reg) {
+			appendOp(plan, plan.data_.storeFmaRRR, executeStoreFmaRRR,
+			         internal::StoreFmaRRR{out, a.reg, b.reg, c.reg});
+			return true;
+		}
+
+		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Reg &&
+		    c.kind == ValueKind::Array) {
+			appendOp(plan, plan.data_.storeFmaRRA, executeStoreFmaRRA,
+			         internal::StoreFmaRRA{out, a.reg, b.reg, c.array});
+			return true;
+		}
+
+		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array &&
+		    c.kind == ValueKind::Array) {
+			appendOp(plan, plan.data_.storeFmaRAA, executeStoreFmaRAA,
+			         internal::StoreFmaRAA{out, a.reg, b.array, c.array});
+			return true;
+		}
+
+		if (a.kind == ValueKind::Array && b.kind == ValueKind::Array &&
+		    c.kind == ValueKind::Array) {
+			appendOp(plan, plan.data_.storeFmaAAA, executeStoreFmaAAA,
+			         internal::StoreFmaAAA{out, a.array, b.array, c.array});
+			return true;
+		}
+
+		if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar &&
+		    c.kind == ValueKind::Array) {
+			appendOp(plan, plan.data_.storeFmaASA, executeStoreFmaASA,
+			         internal::StoreFmaASA{out, a.array, b.scalar, c.array});
+			return true;
+		}
+
+		if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array &&
+		    c.kind == ValueKind::Array) {
+			appendOp(plan, plan.data_.storeFmaASA, executeStoreFmaASA,
+			         internal::StoreFmaASA{out, b.array, a.scalar, c.array});
+			return true;
+		}
+
+		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array &&
+		    c.kind == ValueKind::Scalar) {
+			appendOp(plan, plan.data_.storeFmaRAS, executeStoreFmaRAS,
+			         internal::StoreFmaRAS{out, a.reg, b.array, c.scalar});
+			return true;
+		}
+
+		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar &&
+		    c.kind == ValueKind::Array) {
+			appendOp(plan, plan.data_.storeFmaRSA, executeStoreFmaRSA,
+			         internal::StoreFmaRSA{out, a.reg, b.scalar, c.array});
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool emitRootFmaStore(const Engine &engine, FusionPlan &plan,
+	                             const Assignment &assignment, CompileContext &context)
+	{
+		if (assignment.kind != AssignmentKind::Assign) {
+			return false;
+		}
+
+		const std::size_t nodeId{assignment.expr_.nodeId()};
+		if (!canUseFma(engine, nodeId, context)) {
+			return false;
+		}
+
+		const std::size_t rootGroup{context.groupByNode[nodeId]};
+		if (rootGroup >= context.groups.size() || context.groups[rootGroup].useCount != 1) {
+			return false;
+		}
+
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		std::size_t mulId{INVALID_NODE};
+		std::size_t addId{INVALID_NODE};
+		if (engine.impl_->nodes[node.lhs].kind == NodeKind::Mul) {
+			mulId = node.lhs;
+			addId = node.rhs;
+		} else {
+			mulId = node.rhs;
+			addId = node.lhs;
+		}
+
+		const ExprNode &mul{engine.impl_->nodes[mulId]};
+		const ValueRef a{compileNode(engine, plan, mul.lhs, context)};
+		const ValueRef b{compileNode(engine, plan, mul.rhs, context)};
+		const ValueRef c{compileNode(engine, plan, addId, context)};
+		SimdBlock *out{assignment.out_->variable.array().data()};
+
+		const bool emitted{emitFmaStoreOrFallback(plan, out, a, b, c)};
+		if (!emitted) {
+			const int dst{plan.allocateRegister()};
+			emitFmaOrFallback(plan, dst, a, b, c);
+			emitStore(plan, out, makeTemporaryRegValue(dst), context);
+		}
+
+		releaseIfLastUse(plan, a, context);
+		releaseIfLastUse(plan, b, context);
+		releaseIfLastUse(plan, c, context);
+
+		--context.groups[rootGroup].useCount;
+		return true;
 	}
 
 	static ValueRef makeTemporaryRegValue(int reg) noexcept
@@ -2218,6 +2750,13 @@ struct Compiler {
 		std::size_t storeS{};
 		std::size_t storeFmaAAA{};
 		std::size_t storeFmaASA{};
+		std::size_t storeFmaRRR{};
+		std::size_t storeFmaRRA{};
+		std::size_t storeFmaRAA{};
+		std::size_t storeFmaRAS{};
+		std::size_t storeFmaRSA{};
+		std::size_t storeNegFmaAAA{};
+		std::size_t storeNegFmaASA{};
 		std::size_t storeAddAA{};
 		std::size_t storeAddAS{};
 		std::size_t storeSubAA{};
@@ -2265,6 +2804,10 @@ struct Compiler {
 			++estimate.storeFmaAAA;
 		} else if (kind == PendingStoreKind::FmaASA) {
 			++estimate.storeFmaASA;
+		} else if (kind == PendingStoreKind::NegFmaAAA) {
+			++estimate.storeNegFmaAAA;
+		} else if (kind == PendingStoreKind::NegFmaASA) {
+			++estimate.storeNegFmaASA;
 		} else if (kind == PendingStoreKind::AddAA) {
 			++estimate.storeAddAA;
 		} else if (kind == PendingStoreKind::AddAS) {
@@ -2309,6 +2852,14 @@ struct Compiler {
 			if (isCompoundAssignment(assignment.kind)) {
 				++estimate.instructionCount;
 				++estimate.storeR;
+			} else if (root.kind == NodeKind::Add) {
+				std::size_t mulId{INVALID_NODE};
+				std::size_t addId{INVALID_NODE};
+				if (findFmaParts(engine, assignment.expr_.nodeId(), mulId, addId)) {
+					++estimate.storeFmaRRR;
+				} else {
+					++estimate.storeR;
+				}
 			} else if (root.kind == NodeKind::Variable) {
 				++estimate.storeA;
 			} else if (root.kind == NodeKind::Scalar) {
@@ -2329,6 +2880,13 @@ struct Compiler {
 		plan.data_.storeS.reserve(estimate.storeS);
 		plan.data_.storeFmaAAA.reserve(estimate.storeFmaAAA);
 		plan.data_.storeFmaASA.reserve(estimate.storeFmaASA);
+		plan.data_.storeFmaRRR.reserve(estimate.storeFmaRRR);
+		plan.data_.storeFmaRRA.reserve(estimate.storeFmaRRA);
+		plan.data_.storeFmaRAA.reserve(estimate.storeFmaRAA);
+		plan.data_.storeFmaRAS.reserve(estimate.storeFmaRAS);
+		plan.data_.storeFmaRSA.reserve(estimate.storeFmaRSA);
+		plan.data_.storeNegFmaAAA.reserve(estimate.storeNegFmaAAA);
+		plan.data_.storeNegFmaASA.reserve(estimate.storeNegFmaASA);
 		plan.data_.storeAddAA.reserve(estimate.storeAddAA);
 		plan.data_.storeAddAS.reserve(estimate.storeAddAS);
 		plan.data_.storeSubAA.reserve(estimate.storeSubAA);
@@ -2346,8 +2904,10 @@ struct Compiler {
 		internal::FusionPlanData &data{plan.data_};
 
 		data.blockCount = {};
+		data.directInstructionCount = {};
 		data.nextRegister = {};
 		data.maxRegisterCount = {};
+		data.directOnly = true;
 		data.freeRegisters.clear();
 
 		data.addRR.clear();
@@ -2392,6 +2952,13 @@ struct Compiler {
 
 		data.storeFmaAAA.clear();
 		data.storeFmaASA.clear();
+		data.storeFmaRRR.clear();
+		data.storeFmaRRA.clear();
+		data.storeFmaRAA.clear();
+		data.storeFmaRAS.clear();
+		data.storeFmaRSA.clear();
+		data.storeNegFmaAAA.clear();
+		data.storeNegFmaASA.clear();
 		data.storeAddAA.clear();
 		data.storeAddAS.clear();
 		data.storeSubAA.clear();
@@ -2421,8 +2988,35 @@ struct Compiler {
 		const PlanReserveEstimate reserve{estimatePlanReserve(engine, assignments, range)};
 		reservePlanStorage(plan, reserve);
 
-		CompileContext &context{makeCompileContext(engine)};
+		bool directOnly{true};
 
+		for (std::size_t i{range.begin}; i < range.end; ++i) {
+			const Assignment &assignment{assignments[i]};
+			PendingStore store{};
+			if (makeDirectAssignmentStore(engine, assignment, store)) {
+				continue;
+			}
+
+			directOnly = false;
+		}
+
+		std::vector<PendingStore> &stores{engine.impl_->storeScratch};
+		stores.clear();
+		stores.reserve(assignmentCount(range));
+
+		if (directOnly) {
+			for (std::size_t i{range.begin}; i < range.end; ++i) {
+				PendingStore store{};
+				const bool direct{
+				    makeDirectAssignmentStore(engine, assignments[i], store)};
+				assert(direct);
+				emitDirectPendingStore(plan, store);
+			}
+
+			return;
+		}
+
+		CompileContext &context{makeCompileContext(engine)};
 		for (std::size_t i{range.begin}; i < range.end; ++i) {
 			const Assignment &assignment{assignments[i]};
 			PendingStore store{};
@@ -2433,15 +3027,15 @@ struct Compiler {
 			countUses(engine, assignment.expr_.nodeId(), context);
 		}
 
-		std::vector<PendingStore> &stores{engine.impl_->storeScratch};
-		stores.clear();
-		stores.reserve(assignmentCount(range));
-
 		for (std::size_t i{range.begin}; i < range.end; ++i) {
 			const Assignment &assignment{assignments[i]};
 			PendingStore store{};
 			if (makeDirectAssignmentStore(engine, assignment, store)) {
 				stores.push_back(store);
+				continue;
+			}
+
+			if (emitRootFmaStore(engine, plan, assignment, context)) {
 				continue;
 			}
 
@@ -2617,6 +3211,7 @@ void Engine::execute()
 	if (impl_->pendingAssignments.empty()) {
 		internal::Compiler::rememberExpressionReserve(*this);
 		impl_->nodes.clear();
+		impl_->nodeKeyIndex.clear();
 		return;
 	}
 
@@ -2626,6 +3221,7 @@ void Engine::execute()
 	impl_->pendingAssignments.clear();
 	internal::Compiler::rememberExpressionReserve(*this);
 	impl_->nodes.clear();
+	impl_->nodeKeyIndex.clear();
 	plan.execute();
 }
 

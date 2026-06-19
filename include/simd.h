@@ -29,6 +29,44 @@ class Array
 {
 public:
 	/*!
+	 *   @brief 1要素を書き換えるための代理オブジェクト
+	 *   @details
+	 * `array[index] = value;` の書き込みと、`float value = array[index];` の読み取りに使います。
+	 * 内部表現の都合でfloat参照は返しません。
+	 */
+	class ElementProxy
+	{
+	public:
+		/*!
+		 *   @brief 指定要素へ値を書き込み
+		 *   @param[in] value 設定するfloat値
+		 *   @return 自分自身への参照
+		 */
+		ElementProxy &operator=(float value);
+
+		/*!
+		 *   @brief 別の代理要素から値を書き込み
+		 *   @param[in] value コピー元の代理要素
+		 *   @return 自分自身への参照
+		 */
+		ElementProxy &operator=(const ElementProxy &value);
+
+		/*!
+		 *   @brief float値として読み取り
+		 *   @return 指定要素の値
+		 */
+		operator float() const;
+
+	private:
+		friend class Array;
+
+		ElementProxy(Array &array, std::size_t index) noexcept;
+
+		Array *array_{};
+		std::size_t index_{};
+	};
+
+	/*!
 	 *   @brief 空または指定サイズの配列を作成
 	 *   @param[in] engine 配列を紐づけるEngine
 	 *   @param[in] elementCount 論理的なfloat要素数
@@ -186,6 +224,42 @@ public:
 	void push_back(float value);
 
 	/*!
+	 *   @brief 指定位置の値を取得
+	 *   @param[in] index 取得する要素番号
+	 *   @return 指定位置のfloat値
+	 *   @throws std::out_of_range indexが配列サイズ以上の場合
+	 *   @note 大量の読み取りにはcopyTo()またはtoVector()を使ってください。
+	 */
+	float get(std::size_t index) const;
+
+	/*!
+	 *   @brief 指定位置の値を書き換え
+	 *   @param[in] index 書き換える要素番号
+	 *   @param[in] value 設定するfloat値
+	 *   @throws std::out_of_range indexが配列サイズ以上の場合
+	 *   @note 大量の書き換えにはcopyFrom()や式APIを使ってください。
+	 */
+	void set(std::size_t index, float value);
+
+	/*!
+	 *   @brief 指定位置の要素へアクセス
+	 *   @param[in] index アクセスする要素番号
+	 *   @return 書き込み可能な代理オブジェクト
+	 *   @details `array[index] = value;` のように1要素を書き換えられます。
+	 *            float参照は返さないため、`float &value = array[index];` はできません。
+	 *   @throws std::out_of_range indexが配列サイズ以上の場合
+	 */
+	ElementProxy operator[](std::size_t index);
+
+	/*!
+	 *   @brief 指定位置の要素を読み取り
+	 *   @param[in] index アクセスする要素番号
+	 *   @return 指定位置のfloat値
+	 *   @throws std::out_of_range indexが配列サイズ以上の場合
+	 */
+	float operator[](std::size_t index) const;
+
+	/*!
 	 *   @brief 論理要素数を取得
 	 *   @return floatとして扱う要素数
 	 */
@@ -320,8 +394,10 @@ private:
 
 /*!
  *   @brief SIMD式の登録と実行を行うエンジン
- *   @details Engineは式ノードの作成、遅延代入、実行を担当します。
- *            配列そのものの寿命はArrayが所有します。
+ *   @details
+ * Engineは式ノードの作成、遅延代入、実行を担当します。
+ *
+ * 配列そのものの寿命はArrayが所有します。
  */
 class Engine
 {
@@ -374,7 +450,9 @@ public:
 
 	/*!
 	 *   @brief 遅延代入をまとめて実行
-	 *   @details Array::operator=で積まれた代入を、内部の実行手順に変換して処理します。
+	 *   @details
+	 * Array::operator=で積まれた代入を、内部の実行手順に変換して処理します。
+
 	 */
 	void execute();
 

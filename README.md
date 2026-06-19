@@ -59,6 +59,7 @@ include/
   simd.h              公開インターフェース
 src/
   simd.cpp            実装
+  simd_backend.h      内部SIMD命令の薄いラッパー
   simd_internal.h     内部型
   simd_low_level.h    ベンチマーク用の低レベル補助API
   simd_debug.h        開発用の診断補助API
@@ -70,13 +71,16 @@ tests/
 
 利用側は `include/simd.h` とビルド済みライブラリだけで使えます。`src/` 配下のファイルは、実装を確認したい場合やライブラリを再ビルドする場合に見るためのものです。
 
-## 最小サンプル
+## 最小利用例
 
-実際にビルドできる最小利用コードは `examples/minimal.cpp` に置いています。
+`simd.h` を読み込み、`Array` に値を入れて、式を書いてから `engine.execute()` でまとめて実行します。
+実際にビルドできるコードは `examples/minimal.cpp` に置いています。
 
 ```cpp
 #include "simd.h"
 
+#include <cstddef>
+#include <iostream>
 #include <vector>
 
 int main()
@@ -84,14 +88,29 @@ int main()
 	rice::simd::Engine engine{};
 
 	rice::simd::Array a{engine, {1.0f, 2.0f, 3.0f, 4.0f}};
-	rice::simd::Array b{engine, a.size(), 2.0f};
+	rice::simd::Array b{engine};
 	rice::simd::Array c{engine, {10.0f, 20.0f, 30.0f, 40.0f}};
 	rice::simd::Array out{engine};
 
+	// assign()で要素数と値を一括設定できます。
+	b.assign(a.size(), 2.0f);
+
+	// []だけで1要素の読み取りと書き換えができます。
+	float lastValue = a[3];
+	a[3] = lastValue + 1.0f;
+
+	// outが空の場合は、入力配列と同じ要素数へ自動で確保されます。
 	out = a * b + c;
 	engine.execute();
 
 	std::vector<float> result{out.toVector()};
+
+	std::cout << "result: ";
+
+	for (const auto &value : result) {
+		std::cout << value << " ";
+	}
+
 	return 0;
 }
 ```
@@ -109,7 +128,7 @@ cmake --build build-cmake --config Release --target simd_minimal_example
 cmake --build build-cmake --config Release --target run_simd_minimal_example
 ```
 
-## 値の入れ方
+## 値の設定と取得
 
 ```cpp
 rice::simd::Array a{engine, {1.0f, 2.0f, 3.0f, 4.0f}};
@@ -119,6 +138,12 @@ a.assign(4, 2.0f);
 a.copyFrom(std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f});
 a = {5.0f, 6.0f, 7.0f, 8.0f};
 a.push_back(9.0f);
+
+// 単体の要素を扱う場合
+a.set(3, 10.0f);
+float value = a.get(3);
+a[3] = value + 1.0f;
+float sameValue = a[3];
 
 std::vector<float> result{};
 a.copyTo(result);
@@ -164,5 +189,7 @@ engine.execute();
 ctest --test-dir build-cmake -C Release --output-on-failure -V
 ```
 
-ベンチマーク内では、手書きSIMDとDirectXMathとの比較も行っています。手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではないので、通常の利用側は `simd.h` の `Array`、`Engine`だけで扱うことが可能です。
+ベンチマーク内では、手書きSIMDとDirectXMathとの比較も行っています。遅延実行で複数の独立した出力をまとめる場合と、乗算・加算が多い重い式の場合も確認できます。
+
+手書きSIMD比較のために `simd_low_level.h` を使っていますが、これは利用者向けAPIではないので、通常の利用側は `simd.h` の `Array`、`Engine`だけで扱うことが可能です。
 

@@ -8,6 +8,7 @@ option(SIMD_LIBRARY_BUILD_EXAMPLES "Build example executable" OFF)
 add_library(simd STATIC
 	src/simd.cpp
 	include/simd.h
+	src/simd_backend.h
 	src/simd_debug.h
 	src/simd_internal.h
 	src/simd_low_level.h

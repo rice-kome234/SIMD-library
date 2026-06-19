@@ -4,7 +4,6 @@
 
 #include <cassert>
 #include <cstddef>
-#include <immintrin.h>
 
 namespace rice::simd::internal
 {
@@ -25,11 +24,14 @@ struct LowLevelAccess {
 
 namespace rice::simd::low_level
 {
+using Block = internal::SimdBlock;
+
 /*!
  *   @brief 1回の内部SIMD処理で扱うfloat要素数
  *   @details ベンチマークや手書きSIMD比較でだけ使う低レベル定数です。
  */
 inline constexpr std::size_t SIMD_WIDTH{internal::SIMD_WIDTH};
+inline constexpr std::size_t SIMD_ALIGNMENT{internal::SIMD_ALIGNMENT};
 
 /*!
  *   @brief 内部SIMDブロック数を取得
@@ -49,7 +51,7 @@ inline std::size_t blockCount(const Array &array) noexcept
  *   @return 指定した内部ブロックへの参照
  *   @warning 最後のブロックにはパディングレーンが含まれる場合があります。
  */
-inline __m256 &block(Array &array, std::size_t index) noexcept
+inline Block &block(Array &array, std::size_t index) noexcept
 {
 	return internal::LowLevelAccess::storage(array).block(index);
 }
@@ -61,7 +63,7 @@ inline __m256 &block(Array &array, std::size_t index) noexcept
  *   @return 指定した内部ブロックへの読み取り専用参照
  *   @warning 最後のブロックにはパディングレーンが含まれる場合があります。
  */
-inline const __m256 &block(const Array &array, std::size_t index) noexcept
+inline const Block &block(const Array &array, std::size_t index) noexcept
 {
 	return internal::LowLevelAccess::storage(array).block(index);
 }
@@ -71,7 +73,7 @@ inline const __m256 &block(const Array &array, std::size_t index) noexcept
  *   @param[in,out] array 参照する配列
  *   @return 内部ストレージの先頭ポインタ
  */
-inline __m256 *data(Array &array) noexcept
+inline Block *data(Array &array) noexcept
 {
 	return internal::LowLevelAccess::storage(array).data();
 }
@@ -81,8 +83,24 @@ inline __m256 *data(Array &array) noexcept
  *   @param[in] array 参照する配列
  *   @return 内部ストレージの読み取り専用先頭ポインタ
  */
-inline const __m256 *data(const Array &array) noexcept
+inline const Block *data(const Array &array) noexcept
 {
 	return internal::LowLevelAccess::storage(array).data();
+}
+
+inline Block set1(float value) noexcept { return internal::set1Block(value); }
+inline Block loadAligned(const float *values) noexcept
+{
+	return internal::loadAlignedBlock(values);
+}
+inline void storeAligned(float *values, Block value) noexcept
+{
+	internal::storeAlignedBlock(values, value);
+}
+inline Block add(Block lhs, Block rhs) noexcept { return internal::addBlock(lhs, rhs); }
+inline Block mul(Block lhs, Block rhs) noexcept { return internal::mulBlock(lhs, rhs); }
+inline Block multiplyAdd(Block lhs, Block rhs, Block addend) noexcept
+{
+	return internal::multiplyAddBlock(lhs, rhs, addend);
 }
 }
