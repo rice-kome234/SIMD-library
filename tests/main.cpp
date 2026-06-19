@@ -11,7 +11,8 @@
 
 namespace
 {
-constexpr std::size_t ELEMENT_COUNT{static_cast<std::size_t>(1) << 22};
+// ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
+constexpr std::size_t ELEMENT_COUNT{static_cast<std::size_t>(1) << 23};
 constexpr int REPEAT_COUNT{100};
 constexpr float DELTA_TIME{0.016f};
 constexpr std::size_t BATCHED_OUTPUT_COUNT{16};
@@ -32,7 +33,6 @@ int main()
 
 	std::cout << "ベンチマークの開始" << std::endl;
 
-	// ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
 	// 通常式でのベンチマーク
 	const simdbench::FusedExpressionBenchmarkResult fused{
 	    simdbench::runFusedExpressionBenchmark(ELEMENT_COUNT, REPEAT_COUNT)};
@@ -66,39 +66,25 @@ int main()
 
 	std::cout << "[位置と速度の更新処理の比較]\n";
 	std::cout << "SIMDなしの通常ループ                  : " << motionUpdate.scalarMs << " ms\n";
-	std::cout << "手書きSIMD                            : " << motionUpdate.manualSimdMs
-	          << " ms\n";
-	std::cout << "DirectXMath                           : " << motionUpdate.directXMathMs
-	          << " ms\n";
-	std::cout << "式API                                 : " << motionUpdate.specializedUpdateMs
-	          << " ms\n";
-	std::cout << "数値誤差(通常ループ と SIMD)          : " << motionUpdate.scalarPositionXError
-	          << "\n";
-	std::cout << "数値誤差(通常ループ と DXMath)        : "
-	          << motionUpdate.directXMathPositionXError << "\n";
-	std::cout << "数値誤差(通常ループ と 式API)         : "
-	          << motionUpdate.specializedPositionXError << "\n";
+	std::cout << "手書きSIMD                            : " << motionUpdate.manualSimdMs << " ms\n";
+	std::cout << "DirectXMath                           : " << motionUpdate.directXMathMs << " ms\n";
+	std::cout << "式API                                 : " << motionUpdate.specializedUpdateMs << " ms\n";
+	std::cout << "数値誤差(通常ループ と SIMD)          : " << motionUpdate.scalarPositionXError << "\n";
+	std::cout << "数値誤差(通常ループ と DXMath)        : " << motionUpdate.directXMathPositionXError << "\n";
+	std::cout << "数値誤差(通常ループ と 式API)         : " << motionUpdate.specializedPositionXError << "\n";
 	std::cout << "\n";
 
 	std::cout << "[遅延実行でまとめる場合の比較]\n";
 	std::cout << "出力配列数  : " << batched.outputCount << "\n";
 	std::cout << "SIMDなしの通常ループ              : " << batched.scalarMs << " ms\n";
-	std::cout << "手書きSIMD(通常実行)              : " << batched.manualSimdMs
-	          << " ms\n";
-	std::cout << "DirectXMath(通常実行)             : " << batched.directXMathMs
-	          << " ms\n";
-	std::cout << "式API(1つずつexecute)             : " << batched.sequentialExpressionMs
-	          << " ms\n";
-	std::cout << "式API(まとめて1回execute)         : " << batched.batchedExpressionMs
-	          << " ms\n";
-	std::cout << "数値誤差(通常ループ と SIMD)      : "
-	          << batched.manualSimdFirstOutputError << "\n";
-	std::cout << "数値誤差(通常ループ と DXMath)    : "
-	          << batched.directXMathFirstOutputError << "\n";
-	std::cout << "数値誤差(通常ループ と 1つずつ)    : "
-	          << batched.sequentialFirstOutputError << "\n";
-	std::cout << "数値誤差(通常ループ と まとめ実行) : "
-	          << batched.batchedFirstOutputError << "\n";
+	std::cout << "手書きSIMD(通常実行)              : " << batched.manualSimdMs << " ms\n";
+	std::cout << "DirectXMath(通常実行)             : " << batched.directXMathMs << " ms\n";
+	std::cout << "式API(1つずつexecute)             : " << batched.sequentialExpressionMs << " ms\n";
+	std::cout << "式API(まとめて1回execute)         : " << batched.batchedExpressionMs << " ms\n";
+	std::cout << "数値誤差(通常ループ と SIMD)      : " << batched.manualSimdFirstOutputError << "\n";
+	std::cout << "数値誤差(通常ループ と DXMath)    : " << batched.directXMathFirstOutputError << "\n";
+	std::cout << "数値誤差(通常ループ と 1つずつ)    : " << batched.sequentialFirstOutputError << "\n";
+	std::cout << "数値誤差(通常ループ と まとめ実行) : " << batched.batchedFirstOutputError << "\n";
 	std::cout << "\n";
 
 	std::cout << "[重い式の比較(今回は(a * b + c) * (d * e + f) + (a + d) * (b + e))]\n";
