@@ -924,6 +924,20 @@ void executeStoreS(const internal::FusionPlanData &plan, std::size_t blockIndex,
 
 void executeDirectStoresBlock(const internal::FusionPlanData &plan, std::size_t blockIndex) noexcept
 {
+	for (const internal::StoreFmaFmaAddProduct &op : plan.storeFmaFmaAddProducts) {
+		const SimdBlock left{
+		    multiplyAddBlock(op.leftA[blockIndex], op.leftB[blockIndex],
+		                     op.leftC[blockIndex])};
+		const SimdBlock right{
+		    multiplyAddBlock(op.rightA[blockIndex], op.rightB[blockIndex],
+		                     op.rightC[blockIndex])};
+		const SimdBlock extra{
+		    mulBlock(addBlock(op.addLeftA[blockIndex], op.addLeftB[blockIndex]),
+		             addBlock(op.addRightA[blockIndex], op.addRightB[blockIndex]))};
+
+		op.out[blockIndex] = multiplyAddBlock(left, right, extra);
+	}
+
 	for (const internal::StoreFmaAAA &op : plan.storeFmaAAA) {
 		op.out[blockIndex] =
 		    multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
@@ -1725,6 +1739,24 @@ struct Compiler {
 		return value;
 	}
 
+	static void compileBinaryOperands(const Engine &engine, FusionPlan &plan,
+	                                  std::size_t lhsId, std::size_t rhsId,
+	                                  CompileContext &context, ValueRef &lhs,
+	                                  ValueRef &rhs)
+	{
+		const std::size_t lhsCost{estimateNodeInstructionCount(engine, lhsId)};
+		const std::size_t rhsCost{estimateNodeInstructionCount(engine, rhsId)};
+
+		if (rhsCost > lhsCost) {
+			rhs = compileNode(engine, plan, rhsId, context);
+			lhs = compileNode(engine, plan, lhsId, context);
+			return;
+		}
+
+		lhs = compileNode(engine, plan, lhsId, context);
+		rhs = compileNode(engine, plan, rhsId, context);
+	}
+
 	static ValueRef compileNode(const Engine &engine, FusionPlan &plan, std::size_t nodeId,
 	                            CompileContext &context)
 	{
@@ -1745,8 +1777,9 @@ struct Compiler {
 		if (canUseFma(engine, nodeId, context)) {
 			result = compileFma(engine, plan, nodeId, context);
 		} else if (n.kind == NodeKind::Add) {
-			const ValueRef lhs{compileNode(engine, plan, n.lhs, context)};
-			const ValueRef rhs{compileNode(engine, plan, n.rhs, context)};
+			ValueRef lhs{};
+			ValueRef rhs{};
+			compileBinaryOperands(engine, plan, n.lhs, n.rhs, context, lhs, rhs);
 
 			const int dst{plan.allocateRegister()};
 			emitAdd(plan, dst, lhs, rhs);
@@ -1756,8 +1789,9 @@ struct Compiler {
 
 			result = makeRegValue(dst, groupId);
 		} else if (n.kind == NodeKind::Sub) {
-			const ValueRef lhs{compileNode(engine, plan, n.lhs, context)};
-			const ValueRef rhs{compileNode(engine, plan, n.rhs, context)};
+			ValueRef lhs{};
+			ValueRef rhs{};
+			compileBinaryOperands(engine, plan, n.lhs, n.rhs, context, lhs, rhs);
 
 			const int dst{plan.allocateRegister()};
 			emitSub(plan, dst, lhs, rhs);
@@ -1767,8 +1801,9 @@ struct Compiler {
 
 			result = makeRegValue(dst, groupId);
 		} else if (n.kind == NodeKind::Mul) {
-			const ValueRef lhs{compileNode(engine, plan, n.lhs, context)};
-			const ValueRef rhs{compileNode(engine, plan, n.rhs, context)};
+			ValueRef lhs{};
+			ValueRef rhs{};
+			compileBinaryOperands(engine, plan, n.lhs, n.rhs, context, lhs, rhs);
 
 			const int dst{plan.allocateRegister()};
 			emitMul(plan, dst, lhs, rhs);
@@ -1778,8 +1813,9 @@ struct Compiler {
 
 			result = makeRegValue(dst, groupId);
 		} else {
-			const ValueRef lhs{compileNode(engine, plan, n.lhs, context)};
-			const ValueRef rhs{compileNode(engine, plan, n.rhs, context)};
+			ValueRef lhs{};
+			ValueRef rhs{};
+			compileBinaryOperands(engine, plan, n.lhs, n.rhs, context, lhs, rhs);
 
 			const int dst{plan.allocateRegister()};
 			emitDiv(plan, dst, lhs, rhs);
@@ -1813,9 +1849,22 @@ struct Compiler {
 
 		const ExprNode &mul{engine.impl_->nodes[mulId]};
 
-		const ValueRef a{compileNode(engine, plan, mul.lhs, context)};
-		const ValueRef b{compileNode(engine, plan, mul.rhs, context)};
-		const ValueRef c{compileNode(engine, plan, addId, context)};
+		ValueRef a{};
+		ValueRef b{};
+		ValueRef c{};
+		const std::size_t aCost{estimateNodeInstructionCount(engine, mul.lhs)};
+		const std::size_t bCost{estimateNodeInstructionCount(engine, mul.rhs)};
+		const std::size_t cCost{estimateNodeInstructionCount(engine, addId)};
+
+		if (cCost > aCost && cCost > bCost) {
+			c = compileNode(engine, plan, addId, context);
+			a = compileNode(engine, plan, mul.lhs, context);
+			b = compileNode(engine, plan, mul.rhs, context);
+		} else {
+			a = compileNode(engine, plan, mul.lhs, context);
+			b = compileNode(engine, plan, mul.rhs, context);
+			c = compileNode(engine, plan, addId, context);
+		}
 
 		const int dst{plan.allocateRegister()};
 		emitFmaOrFallback(plan, dst, a, b, c);
@@ -1841,6 +1890,13 @@ struct Compiler {
 	static void appendDirectStore(FusionPlan &plan, std::vector<Op> &bucket, const Op &op)
 	{
 		bucket.push_back(op);
+		++plan.data_.directInstructionCount;
+	}
+
+	static void appendDirectFmaFmaAddProductStore(
+	    FusionPlan &plan, const internal::StoreFmaFmaAddProduct &store)
+	{
+		plan.data_.storeFmaFmaAddProducts.push_back(store);
 		++plan.data_.directInstructionCount;
 	}
 
@@ -2680,9 +2736,21 @@ struct Compiler {
 		}
 
 		const ExprNode &mul{engine.impl_->nodes[mulId]};
-		const ValueRef a{compileNode(engine, plan, mul.lhs, context)};
-		const ValueRef b{compileNode(engine, plan, mul.rhs, context)};
-		const ValueRef c{compileNode(engine, plan, addId, context)};
+		ValueRef a{};
+		ValueRef b{};
+		ValueRef c{};
+		const std::size_t aCost{estimateNodeInstructionCount(engine, mul.lhs)};
+		const std::size_t bCost{estimateNodeInstructionCount(engine, mul.rhs)};
+		const std::size_t cCost{estimateNodeInstructionCount(engine, addId)};
+		if (cCost > aCost && cCost > bCost) {
+			c = compileNode(engine, plan, addId, context);
+			a = compileNode(engine, plan, mul.lhs, context);
+			b = compileNode(engine, plan, mul.rhs, context);
+		} else {
+			a = compileNode(engine, plan, mul.lhs, context);
+			b = compileNode(engine, plan, mul.rhs, context);
+			c = compileNode(engine, plan, addId, context);
+		}
 		SimdBlock *out{assignment.out_->variable.array().data()};
 
 		const bool emitted{emitFmaStoreOrFallback(plan, out, a, b, c)};
@@ -2745,6 +2813,7 @@ struct Compiler {
 
 	struct PlanReserveEstimate {
 		std::size_t instructionCount{};
+		std::size_t storeFmaFmaAddProduct{};
 		std::size_t storeR{};
 		std::size_t storeA{};
 		std::size_t storeS{};
@@ -2831,17 +2900,128 @@ struct Compiler {
 		}
 	}
 
+	static bool makeArrayLeaf(const Engine &engine, std::size_t nodeId,
+	                          const SimdBlock *&array) noexcept
+	{
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		if (node.kind != NodeKind::Variable) {
+			return false;
+		}
+
+		array = node.array->data();
+		return true;
+	}
+
+	static bool makeLeafAddParts(const Engine &engine, std::size_t nodeId,
+	                             const SimdBlock *&a, const SimdBlock *&b) noexcept
+	{
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		if (node.kind != NodeKind::Add) {
+			return false;
+		}
+
+		if (!makeArrayLeaf(engine, node.lhs, a)) {
+			return false;
+		}
+
+		return makeArrayLeaf(engine, node.rhs, b);
+	}
+
+	static bool makeLeafFmaParts(const Engine &engine, std::size_t nodeId,
+	                             const SimdBlock *&a, const SimdBlock *&b,
+	                             const SimdBlock *&c) noexcept
+	{
+		std::size_t mulId{INVALID_NODE};
+		std::size_t addId{INVALID_NODE};
+		if (!findFmaParts(engine, nodeId, mulId, addId)) {
+			return false;
+		}
+
+		const ExprNode &mul{engine.impl_->nodes[mulId]};
+		if (!makeArrayLeaf(engine, mul.lhs, a)) {
+			return false;
+		}
+
+		if (!makeArrayLeaf(engine, mul.rhs, b)) {
+			return false;
+		}
+
+		return makeArrayLeaf(engine, addId, c);
+	}
+
+	static bool makeFmaFmaAddProductParts(
+	    const Engine &engine, std::size_t productId, std::size_t addProductId,
+	    internal::StoreFmaFmaAddProduct &store) noexcept
+	{
+		const ExprNode &product{engine.impl_->nodes[productId]};
+		const ExprNode &addProduct{engine.impl_->nodes[addProductId]};
+		if (product.kind != NodeKind::Mul || addProduct.kind != NodeKind::Mul) {
+			return false;
+		}
+
+		if (!makeLeafFmaParts(engine, product.lhs, store.leftA, store.leftB,
+		                      store.leftC)) {
+			return false;
+		}
+
+		if (!makeLeafFmaParts(engine, product.rhs, store.rightA, store.rightB,
+		                      store.rightC)) {
+			return false;
+		}
+
+		if (!makeLeafAddParts(engine, addProduct.lhs, store.addLeftA,
+		                      store.addLeftB)) {
+			return false;
+		}
+
+		return makeLeafAddParts(engine, addProduct.rhs, store.addRightA,
+		                        store.addRightB);
+	}
+
+	static bool makeDirectFmaFmaAddProductStore(
+	    const Engine &engine, const Assignment &assignment,
+	    internal::StoreFmaFmaAddProduct &store) noexcept
+	{
+		if (assignment.kind != AssignmentKind::Assign) {
+			return false;
+		}
+
+		const ExprNode &root{engine.impl_->nodes[assignment.expr_.nodeId()]};
+		if (root.kind != NodeKind::Add) {
+			return false;
+		}
+
+		store = internal::StoreFmaFmaAddProduct{};
+		store.out = assignment.out_->variable.array().data();
+		if (makeFmaFmaAddProductParts(engine, root.lhs, root.rhs, store)) {
+			return true;
+		}
+
+		store = internal::StoreFmaFmaAddProduct{};
+		store.out = assignment.out_->variable.array().data();
+		return makeFmaFmaAddProductParts(engine, root.rhs, root.lhs, store);
+	}
+
 	static PlanReserveEstimate estimatePlanReserve(const Engine &engine,
 	                                               const std::vector<Assignment> &assignments,
 	                                               internal::AssignmentRange range) noexcept
 	{
 		PlanReserveEstimate estimate{};
+		const bool singleAssignment{assignmentCount(range) == 1};
 
 		for (std::size_t i{range.begin}; i < range.end; ++i) {
 			const Assignment &assignment{assignments[i]};
 			PendingStore store{};
 			if (makeDirectAssignmentStore(engine, assignment, store)) {
 				countDirectStoreReserve(estimate, store.kind);
+				continue;
+			}
+
+			internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
+			if (singleAssignment &&
+			    makeDirectFmaFmaAddProductStore(engine, assignment, fmaFmaAddProduct)) {
+				++estimate.storeFmaFmaAddProduct;
+				++estimate.instructionCount;
 				continue;
 			}
 
@@ -2875,6 +3055,7 @@ struct Compiler {
 	static void reservePlanStorage(FusionPlan &plan, const PlanReserveEstimate &estimate)
 	{
 		plan.data_.ops.reserve(estimate.instructionCount);
+		plan.data_.storeFmaFmaAddProducts.reserve(estimate.storeFmaFmaAddProduct);
 		plan.data_.storeR.reserve(estimate.storeR);
 		plan.data_.storeA.reserve(estimate.storeA);
 		plan.data_.storeS.reserve(estimate.storeS);
@@ -2974,6 +3155,7 @@ struct Compiler {
 		data.storeR.clear();
 		data.storeA.clear();
 		data.storeS.clear();
+		data.storeFmaFmaAddProducts.clear();
 		data.ops.clear();
 	}
 
@@ -2989,11 +3171,18 @@ struct Compiler {
 		reservePlanStorage(plan, reserve);
 
 		bool directOnly{true};
+		const bool singleAssignment{assignmentCount(range) == 1};
 
 		for (std::size_t i{range.begin}; i < range.end; ++i) {
 			const Assignment &assignment{assignments[i]};
 			PendingStore store{};
 			if (makeDirectAssignmentStore(engine, assignment, store)) {
+				continue;
+			}
+
+			internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
+			if (singleAssignment &&
+			    makeDirectFmaFmaAddProductStore(engine, assignment, fmaFmaAddProduct)) {
 				continue;
 			}
 
@@ -3007,10 +3196,20 @@ struct Compiler {
 		if (directOnly) {
 			for (std::size_t i{range.begin}; i < range.end; ++i) {
 				PendingStore store{};
-				const bool direct{
-				    makeDirectAssignmentStore(engine, assignments[i], store)};
-				assert(direct);
-				emitDirectPendingStore(plan, store);
+				if (makeDirectAssignmentStore(engine, assignments[i], store)) {
+					emitDirectPendingStore(plan, store);
+					continue;
+				}
+
+				internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
+				if (singleAssignment &&
+				    makeDirectFmaFmaAddProductStore(engine, assignments[i],
+				                                    fmaFmaAddProduct)) {
+					appendDirectFmaFmaAddProductStore(plan, fmaFmaAddProduct);
+					continue;
+				}
+
+				throw std::logic_error{"直接実行用の式として判定された代入を生成できません。"};
 			}
 
 			return;
