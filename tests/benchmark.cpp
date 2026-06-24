@@ -290,10 +290,8 @@ void executeScalarHeavyExpression(const std::vector<float> &a, const std::vector
 {
 	SIMD_BENCH_DISABLE_LOOP_VECTORIZATION
 	for (std::size_t i{}; i < out.size(); ++i) {
-		const float left{a[i] * b[i] + c[i]};
-		const float right{d[i] * e[i] + f[i]};
-		const float extra{(a[i] + d[i]) * (b[i] + e[i])};
-		out[i] = left * right + extra;
+		out[i] = (a[i] * b[i] + c[i]) * (d[i] * e[i] + f[i]) +
+		         (a[i] + d[i]) * (b[i] + e[i]);
 	}
 }
 
@@ -301,15 +299,13 @@ void executeManualHeavyExpression(const Array &a, const Array &b, const Array &c
                                   const Array &e, const Array &f, Array &out)
 {
 	for (std::size_t i{}; i < low_level::blockCount(out); ++i) {
-		const low_level::Block left{low_level::multiplyAdd(
-		    low_level::block(a, i), low_level::block(b, i), low_level::block(c, i))};
-		const low_level::Block right{low_level::multiplyAdd(
-		    low_level::block(d, i), low_level::block(e, i), low_level::block(f, i))};
-		const low_level::Block extra{low_level::mul(
-		    low_level::add(low_level::block(a, i), low_level::block(d, i)),
-		    low_level::add(low_level::block(b, i), low_level::block(e, i)))};
-
-		low_level::block(out, i) = low_level::multiplyAdd(left, right, extra);
+		low_level::block(out, i) = low_level::multiplyAdd(
+		    low_level::multiplyAdd(low_level::block(a, i), low_level::block(b, i),
+		                           low_level::block(c, i)),
+		    low_level::multiplyAdd(low_level::block(d, i), low_level::block(e, i),
+		                           low_level::block(f, i)),
+		    low_level::mul(low_level::add(low_level::block(a, i), low_level::block(d, i)),
+		                   low_level::add(low_level::block(b, i), low_level::block(e, i))));
 	}
 }
 
@@ -329,19 +325,16 @@ void executeDirectXMathHeavyExpression(const std::vector<float> &a, const std::v
 		const XMVECTOR ev{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(e.data() + i))};
 		const XMVECTOR fv{XMLoadFloat4(reinterpret_cast<const XMFLOAT4 *>(f.data() + i))};
 
-		const XMVECTOR left{XMVectorMultiplyAdd(av, bv, cv)};
-		const XMVECTOR right{XMVectorMultiplyAdd(dv, ev, fv)};
-		const XMVECTOR extra{XMVectorMultiply(XMVectorAdd(av, dv), XMVectorAdd(bv, ev))};
-
 		XMStoreFloat4(reinterpret_cast<XMFLOAT4 *>(out.data() + i),
-		              XMVectorMultiplyAdd(left, right, extra));
+		              XMVectorMultiplyAdd(
+		                  XMVectorMultiplyAdd(av, bv, cv),
+		                  XMVectorMultiplyAdd(dv, ev, fv),
+		                  XMVectorMultiply(XMVectorAdd(av, dv), XMVectorAdd(bv, ev))));
 	}
 
 	for (; i < out.size(); ++i) {
-		const float left{a[i] * b[i] + c[i]};
-		const float right{d[i] * e[i] + f[i]};
-		const float extra{(a[i] + d[i]) * (b[i] + e[i])};
-		out[i] = left * right + extra;
+		out[i] = (a[i] * b[i] + c[i]) * (d[i] * e[i] + f[i]) +
+		         (a[i] + d[i]) * (b[i] + e[i]);
 	}
 }
 

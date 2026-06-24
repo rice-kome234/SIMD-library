@@ -386,6 +386,35 @@ struct StoreFmaFmaAddProduct {
 	const SimdBlock *addRightB{};
 };
 
+struct StoreFmaPlusFma {
+	SimdBlock *out{};
+	const SimdBlock *leftA{};
+	const SimdBlock *leftB{};
+	const SimdBlock *leftC{};
+	const SimdBlock *rightA{};
+	const SimdBlock *rightB{};
+	const SimdBlock *rightC{};
+};
+
+struct StoreNestedFma {
+	SimdBlock *out{};
+	const SimdBlock *innerA{};
+	const SimdBlock *innerB{};
+	const SimdBlock *innerC{};
+	const SimdBlock *mul{};
+	const SimdBlock *add{};
+};
+
+enum class StoreCompoundKind { Add, Sub, Mul, Div };
+
+struct StoreCompoundFma {
+	SimdBlock *out{};
+	const SimdBlock *a{};
+	const SimdBlock *b{};
+	const SimdBlock *c{};
+	StoreCompoundKind kind{StoreCompoundKind::Add};
+};
+
 struct FusionPlanData;
 
 using OpExecutor = void (*)(const FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
@@ -469,6 +498,9 @@ struct FusionPlanData {
 	std::vector<StoreA> storeA;
 	std::vector<StoreS> storeS;
 	std::vector<StoreFmaFmaAddProduct> storeFmaFmaAddProducts;
+	std::vector<StoreFmaPlusFma> storeFmaPlusFmas;
+	std::vector<StoreNestedFma> storeNestedFmas;
+	std::vector<StoreCompoundFma> storeCompoundFmas;
 	std::vector<OpRef> ops;
 };
 

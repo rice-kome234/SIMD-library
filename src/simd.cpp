@@ -922,8 +922,62 @@ void executeStoreS(const internal::FusionPlanData &plan, std::size_t blockIndex,
 	op.out[blockIndex] = op.a;
 }
 
+void executeStoreCompoundFma(const internal::FusionPlanData &plan, std::size_t blockIndex,
+                             SimdBlock *, std::size_t index) noexcept
+{
+	const internal::StoreCompoundFma &op{plan.storeCompoundFmas[index]};
+	const SimdBlock value{
+	    multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex])};
+	const SimdBlock current{op.out[blockIndex]};
+
+	if (op.kind == internal::StoreCompoundKind::Add) {
+		op.out[blockIndex] = addBlock(current, value);
+	} else if (op.kind == internal::StoreCompoundKind::Sub) {
+		op.out[blockIndex] = subBlock(current, value);
+	} else if (op.kind == internal::StoreCompoundKind::Mul) {
+		op.out[blockIndex] = mulBlock(current, value);
+	} else {
+		op.out[blockIndex] = divBlock(current, value);
+	}
+}
+
 void executeDirectStoresBlock(const internal::FusionPlanData &plan, std::size_t blockIndex) noexcept
 {
+	for (const internal::StoreCompoundFma &op : plan.storeCompoundFmas) {
+		const SimdBlock value{
+		    multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex])};
+		const SimdBlock current{op.out[blockIndex]};
+
+		if (op.kind == internal::StoreCompoundKind::Add) {
+			op.out[blockIndex] = addBlock(current, value);
+		} else if (op.kind == internal::StoreCompoundKind::Sub) {
+			op.out[blockIndex] = subBlock(current, value);
+		} else if (op.kind == internal::StoreCompoundKind::Mul) {
+			op.out[blockIndex] = mulBlock(current, value);
+		} else {
+			op.out[blockIndex] = divBlock(current, value);
+		}
+	}
+
+	for (const internal::StoreFmaPlusFma &op : plan.storeFmaPlusFmas) {
+		const SimdBlock left{
+		    multiplyAddBlock(op.leftA[blockIndex], op.leftB[blockIndex],
+		                     op.leftC[blockIndex])};
+		const SimdBlock right{
+		    multiplyAddBlock(op.rightA[blockIndex], op.rightB[blockIndex],
+		                     op.rightC[blockIndex])};
+
+		op.out[blockIndex] = addBlock(left, right);
+	}
+
+	for (const internal::StoreNestedFma &op : plan.storeNestedFmas) {
+		const SimdBlock inner{
+		    multiplyAddBlock(op.innerA[blockIndex], op.innerB[blockIndex],
+		                     op.innerC[blockIndex])};
+
+		op.out[blockIndex] = multiplyAddBlock(inner, op.mul[blockIndex], op.add[blockIndex]);
+	}
+
 	for (const internal::StoreFmaFmaAddProduct &op : plan.storeFmaFmaAddProducts) {
 		const SimdBlock left{
 		    multiplyAddBlock(op.leftA[blockIndex], op.leftB[blockIndex],
@@ -1119,6 +1173,8 @@ int internal::ScheduledPlan::maxRegisterCount() const noexcept
 namespace internal
 {
 struct Compiler {
+	static constexpr std::size_t NODE_INDEX_THRESHOLD{32};
+
 	static std::uint32_t floatBits(float value) noexcept
 	{
 		std::uint32_t bits{};
@@ -1198,6 +1254,29 @@ struct Compiler {
 		}
 	}
 
+	static bool keyIndexLess(const KeyIndex &lhs, const KeyIndex &rhs) noexcept
+	{
+		if (lhs.key != rhs.key) {
+			return lhs.key < rhs.key;
+		}
+
+		return lhs.node < rhs.node;
+	}
+
+	static void rebuildNodeIndex(Engine &engine)
+	{
+		const std::vector<ExprNode> &nodes{engine.impl_->nodes};
+		std::vector<KeyIndex> &nodeIndex{engine.impl_->nodeKeyIndex};
+
+		nodeIndex.clear();
+		nodeIndex.reserve(nodes.size());
+		for (std::size_t nodeId{}; nodeId < nodes.size(); ++nodeId) {
+			nodeIndex.push_back(KeyIndex{nodes[nodeId].key, nodeId});
+		}
+
+		std::sort(nodeIndex.begin(), nodeIndex.end(), keyIndexLess);
+	}
+
 	static void reserveNodesFor(Engine &engine, std::size_t additionalCount)
 	{
 		const std::size_t required{engine.impl_->nodes.size() + additionalCount};
@@ -1219,13 +1298,27 @@ struct Compiler {
 		}
 
 		engine.impl_->nodes.reserve(newCapacity);
-		engine.impl_->nodeKeyIndex.reserve(newCapacity);
+		if (!engine.impl_->nodeKeyIndex.empty() || required > NODE_INDEX_THRESHOLD) {
+			engine.impl_->nodeKeyIndex.reserve(newCapacity);
+		}
 	}
 
 	static void rememberExpressionReserve(Engine &engine) noexcept
 	{
 		if (engine.impl_->expressionReserveHint < engine.impl_->nodes.size()) {
 			engine.impl_->expressionReserveHint = engine.impl_->nodes.size();
+		}
+	}
+
+	static void clearExpressionNodes(Engine &engine) noexcept
+	{
+		rememberExpressionReserve(engine);
+		engine.impl_->nodes.clear();
+		engine.impl_->nodeKeyIndex.clear();
+
+		if (engine.impl_->expressionReserveHint <= NODE_INDEX_THRESHOLD &&
+		    engine.impl_->nodeKeyIndex.capacity() > NODE_INDEX_THRESHOLD) {
+			std::vector<KeyIndex>{}.swap(engine.impl_->nodeKeyIndex);
 		}
 	}
 
@@ -1323,17 +1416,28 @@ struct Compiler {
 			}
 		}
 
-		std::vector<KeyIndex> &nodeIndex{engine.impl_->nodeKeyIndex};
-		const KeyIndex lookup{node.key, 0};
-		const auto first{std::lower_bound(
-		    nodeIndex.begin(), nodeIndex.end(), lookup,
-		    [](const KeyIndex &lhs, const KeyIndex &rhs) {
-			    if (lhs.key != rhs.key) {
-				    return lhs.key < rhs.key;
-			    }
+		if (nodes.size() <= NODE_INDEX_THRESHOLD) {
+			for (std::size_t index{fastBegin}; index > 0; --index) {
+				const std::size_t nodeId{index - 1};
+				if (sameNode(nodes[nodeId], node)) {
+					return Expression{&engine, nodeId};
+				}
+			}
 
-			    return lhs.node < rhs.node;
-		    })};
+			reserveNodesFor(engine, 1);
+			const std::size_t nodeId{engine.impl_->nodes.size()};
+			engine.impl_->nodes.push_back(node);
+			return Expression{&engine, nodeId};
+		}
+
+		std::vector<KeyIndex> &nodeIndex{engine.impl_->nodeKeyIndex};
+		if (nodeIndex.empty()) {
+			rebuildNodeIndex(engine);
+		}
+
+		const KeyIndex lookup{node.key, 0};
+		const auto first{
+		    std::lower_bound(nodeIndex.begin(), nodeIndex.end(), lookup, keyIndexLess)};
 
 		for (auto it{first}; it != nodeIndex.end() && it->key == node.key; ++it) {
 			if (sameNode(nodes[it->node], node)) {
@@ -1346,14 +1450,7 @@ struct Compiler {
 		engine.impl_->nodes.push_back(node);
 		const KeyIndex insertLookup{node.key, nodeId};
 		const auto insertPosition{std::lower_bound(
-		    nodeIndex.begin(), nodeIndex.end(), insertLookup,
-		    [](const KeyIndex &lhs, const KeyIndex &rhs) {
-			    if (lhs.key != rhs.key) {
-				    return lhs.key < rhs.key;
-			    }
-
-			    return lhs.node < rhs.node;
-		    })};
+		    nodeIndex.begin(), nodeIndex.end(), insertLookup, keyIndexLess)};
 		nodeIndex.insert(insertPosition, insertLookup);
 		return Expression{&engine, nodeId};
 	}
@@ -1636,6 +1733,29 @@ struct Compiler {
 
 		const std::vector<KeyIndex> &keys{engine.impl_->nodeKeyIndex};
 		context.groups.reserve(nodes.size());
+		if (keys.empty()) {
+			for (std::size_t nodeId{}; nodeId < nodes.size(); ++nodeId) {
+				std::size_t groupId{INVALID_NODE};
+				for (std::size_t i{}; i < context.groups.size(); ++i) {
+					if (sameNode(nodes[context.groups[i].node], nodes[nodeId])) {
+						groupId = i;
+						break;
+					}
+				}
+
+				if (groupId == INVALID_NODE) {
+					CompileGroup group{};
+					group.key = nodes[nodeId].key;
+					group.node = nodeId;
+					context.groups.push_back(group);
+					groupId = context.groups.size() - 1;
+				}
+
+				context.groupByNode[nodeId] = groupId;
+			}
+
+			return context;
+		}
 
 		for (const KeyIndex &entry : keys) {
 			if (context.groups.empty() || context.groups.back().key != entry.key ||
@@ -1897,6 +2017,27 @@ struct Compiler {
 	    FusionPlan &plan, const internal::StoreFmaFmaAddProduct &store)
 	{
 		plan.data_.storeFmaFmaAddProducts.push_back(store);
+		++plan.data_.directInstructionCount;
+	}
+
+	static void appendDirectFmaPlusFmaStore(FusionPlan &plan,
+	                                        const internal::StoreFmaPlusFma &store)
+	{
+		plan.data_.storeFmaPlusFmas.push_back(store);
+		++plan.data_.directInstructionCount;
+	}
+
+	static void appendDirectNestedFmaStore(FusionPlan &plan,
+	                                       const internal::StoreNestedFma &store)
+	{
+		plan.data_.storeNestedFmas.push_back(store);
+		++plan.data_.directInstructionCount;
+	}
+
+	static void appendDirectCompoundFmaStore(FusionPlan &plan,
+	                                         const internal::StoreCompoundFma &store)
+	{
+		plan.data_.storeCompoundFmas.push_back(store);
 		++plan.data_.directInstructionCount;
 	}
 
@@ -2814,6 +2955,9 @@ struct Compiler {
 	struct PlanReserveEstimate {
 		std::size_t instructionCount{};
 		std::size_t storeFmaFmaAddProduct{};
+		std::size_t storeFmaPlusFma{};
+		std::size_t storeNestedFma{};
+		std::size_t storeCompoundFma{};
 		std::size_t storeR{};
 		std::size_t storeA{};
 		std::size_t storeS{};
@@ -3002,6 +3146,108 @@ struct Compiler {
 		return makeFmaFmaAddProductParts(engine, root.rhs, root.lhs, store);
 	}
 
+	static bool makeDirectFmaPlusFmaStore(const Engine &engine,
+	                                      const Assignment &assignment,
+	                                      internal::StoreFmaPlusFma &store) noexcept
+	{
+		if (assignment.kind != AssignmentKind::Assign) {
+			return false;
+		}
+
+		const ExprNode &root{engine.impl_->nodes[assignment.expr_.nodeId()]};
+		if (root.kind != NodeKind::Add) {
+			return false;
+		}
+
+		store = internal::StoreFmaPlusFma{};
+		store.out = assignment.out_->variable.array().data();
+		if (!makeLeafFmaParts(engine, root.lhs, store.leftA, store.leftB, store.leftC)) {
+			return false;
+		}
+
+		return makeLeafFmaParts(engine, root.rhs, store.rightA, store.rightB,
+		                        store.rightC);
+	}
+
+	static bool makeFmaTimesArrayParts(const Engine &engine, std::size_t nodeId,
+	                                   const SimdBlock *&innerA,
+	                                   const SimdBlock *&innerB,
+	                                   const SimdBlock *&innerC,
+	                                   const SimdBlock *&mul) noexcept
+	{
+		const ExprNode &node{engine.impl_->nodes[nodeId]};
+		if (node.kind != NodeKind::Mul) {
+			return false;
+		}
+
+		if (makeLeafFmaParts(engine, node.lhs, innerA, innerB, innerC) &&
+		    makeArrayLeaf(engine, node.rhs, mul)) {
+			return true;
+		}
+
+		if (makeLeafFmaParts(engine, node.rhs, innerA, innerB, innerC) &&
+		    makeArrayLeaf(engine, node.lhs, mul)) {
+			return true;
+		}
+
+		return false;
+	}
+
+	static bool makeDirectNestedFmaStore(const Engine &engine, const Assignment &assignment,
+	                                     internal::StoreNestedFma &store) noexcept
+	{
+		if (assignment.kind != AssignmentKind::Assign) {
+			return false;
+		}
+
+		std::size_t mulId{INVALID_NODE};
+		std::size_t addId{INVALID_NODE};
+		if (!findFmaParts(engine, assignment.expr_.nodeId(), mulId, addId)) {
+			return false;
+		}
+
+		store = internal::StoreNestedFma{};
+		store.out = assignment.out_->variable.array().data();
+		if (!makeArrayLeaf(engine, addId, store.add)) {
+			return false;
+		}
+
+		return makeFmaTimesArrayParts(engine, mulId, store.innerA, store.innerB,
+		                              store.innerC, store.mul);
+	}
+
+	static internal::StoreCompoundKind compoundStoreKind(AssignmentKind kind) noexcept
+	{
+		if (kind == AssignmentKind::AddAssign) {
+			return internal::StoreCompoundKind::Add;
+		}
+
+		if (kind == AssignmentKind::SubAssign) {
+			return internal::StoreCompoundKind::Sub;
+		}
+
+		if (kind == AssignmentKind::MulAssign) {
+			return internal::StoreCompoundKind::Mul;
+		}
+
+		return internal::StoreCompoundKind::Div;
+	}
+
+	static bool makeDirectCompoundFmaStore(const Engine &engine,
+	                                       const Assignment &assignment,
+	                                       internal::StoreCompoundFma &store) noexcept
+	{
+		if (!isCompoundAssignment(assignment.kind)) {
+			return false;
+		}
+
+		store = internal::StoreCompoundFma{};
+		store.out = assignment.out_->variable.array().data();
+		store.kind = compoundStoreKind(assignment.kind);
+		return makeLeafFmaParts(engine, assignment.expr_.nodeId(), store.a, store.b,
+		                        store.c);
+	}
+
 	static PlanReserveEstimate estimatePlanReserve(const Engine &engine,
 	                                               const std::vector<Assignment> &assignments,
 	                                               internal::AssignmentRange range) noexcept
@@ -3017,10 +3263,33 @@ struct Compiler {
 				continue;
 			}
 
+			internal::StoreCompoundFma compoundFma{};
+			if (makeDirectCompoundFmaStore(engine, assignment, compoundFma)) {
+				++estimate.storeCompoundFma;
+				++estimate.instructionCount;
+				continue;
+			}
+
 			internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
 			if (singleAssignment &&
 			    makeDirectFmaFmaAddProductStore(engine, assignment, fmaFmaAddProduct)) {
 				++estimate.storeFmaFmaAddProduct;
+				++estimate.instructionCount;
+				continue;
+			}
+
+			internal::StoreFmaPlusFma fmaPlusFma{};
+			if (singleAssignment &&
+			    makeDirectFmaPlusFmaStore(engine, assignment, fmaPlusFma)) {
+				++estimate.storeFmaPlusFma;
+				++estimate.instructionCount;
+				continue;
+			}
+
+			internal::StoreNestedFma nestedFma{};
+			if (singleAssignment &&
+			    makeDirectNestedFmaStore(engine, assignment, nestedFma)) {
+				++estimate.storeNestedFma;
 				++estimate.instructionCount;
 				continue;
 			}
@@ -3056,6 +3325,9 @@ struct Compiler {
 	{
 		plan.data_.ops.reserve(estimate.instructionCount);
 		plan.data_.storeFmaFmaAddProducts.reserve(estimate.storeFmaFmaAddProduct);
+		plan.data_.storeFmaPlusFmas.reserve(estimate.storeFmaPlusFma);
+		plan.data_.storeNestedFmas.reserve(estimate.storeNestedFma);
+		plan.data_.storeCompoundFmas.reserve(estimate.storeCompoundFma);
 		plan.data_.storeR.reserve(estimate.storeR);
 		plan.data_.storeA.reserve(estimate.storeA);
 		plan.data_.storeS.reserve(estimate.storeS);
@@ -3156,7 +3428,94 @@ struct Compiler {
 		data.storeA.clear();
 		data.storeS.clear();
 		data.storeFmaFmaAddProducts.clear();
+		data.storeFmaPlusFmas.clear();
+		data.storeNestedFmas.clear();
+		data.storeCompoundFmas.clear();
 		data.ops.clear();
+	}
+
+	template <typename T>
+	static void releaseUnusedLargeVector(std::vector<T> &values) noexcept
+	{
+		constexpr std::size_t maxUnusedCapacity{16};
+		if (values.empty() && values.capacity() > maxUnusedCapacity) {
+			std::vector<T>{}.swap(values);
+		}
+	}
+
+	static void compactUnusedPlanStorage(FusionPlan &plan) noexcept
+	{
+		internal::FusionPlanData &data{plan.data_};
+
+		releaseUnusedLargeVector(data.addRR);
+		releaseUnusedLargeVector(data.addRA);
+		releaseUnusedLargeVector(data.addAR);
+		releaseUnusedLargeVector(data.addAA);
+		releaseUnusedLargeVector(data.addRS);
+		releaseUnusedLargeVector(data.addAS);
+
+		releaseUnusedLargeVector(data.subRR);
+		releaseUnusedLargeVector(data.subRA);
+		releaseUnusedLargeVector(data.subAR);
+		releaseUnusedLargeVector(data.subAA);
+		releaseUnusedLargeVector(data.subRS);
+		releaseUnusedLargeVector(data.subAS);
+		releaseUnusedLargeVector(data.subSR);
+		releaseUnusedLargeVector(data.subSA);
+
+		releaseUnusedLargeVector(data.mulRR);
+		releaseUnusedLargeVector(data.mulRA);
+		releaseUnusedLargeVector(data.mulAR);
+		releaseUnusedLargeVector(data.mulAA);
+		releaseUnusedLargeVector(data.mulRS);
+		releaseUnusedLargeVector(data.mulAS);
+
+		releaseUnusedLargeVector(data.divRR);
+		releaseUnusedLargeVector(data.divRA);
+		releaseUnusedLargeVector(data.divAR);
+		releaseUnusedLargeVector(data.divAA);
+		releaseUnusedLargeVector(data.divRS);
+		releaseUnusedLargeVector(data.divAS);
+		releaseUnusedLargeVector(data.divSR);
+		releaseUnusedLargeVector(data.divSA);
+
+		releaseUnusedLargeVector(data.fmaRRR);
+		releaseUnusedLargeVector(data.fmaRRA);
+		releaseUnusedLargeVector(data.fmaRAA);
+		releaseUnusedLargeVector(data.fmaAAA);
+		releaseUnusedLargeVector(data.fmaASA);
+		releaseUnusedLargeVector(data.fmaRAS);
+		releaseUnusedLargeVector(data.fmaRSA);
+
+		releaseUnusedLargeVector(data.storeFmaAAA);
+		releaseUnusedLargeVector(data.storeFmaASA);
+		releaseUnusedLargeVector(data.storeFmaRRR);
+		releaseUnusedLargeVector(data.storeFmaRRA);
+		releaseUnusedLargeVector(data.storeFmaRAA);
+		releaseUnusedLargeVector(data.storeFmaRAS);
+		releaseUnusedLargeVector(data.storeFmaRSA);
+		releaseUnusedLargeVector(data.storeNegFmaAAA);
+		releaseUnusedLargeVector(data.storeNegFmaASA);
+		releaseUnusedLargeVector(data.storeAddAA);
+		releaseUnusedLargeVector(data.storeAddAS);
+		releaseUnusedLargeVector(data.storeSubAA);
+		releaseUnusedLargeVector(data.storeSubAS);
+		releaseUnusedLargeVector(data.storeSubSA);
+		releaseUnusedLargeVector(data.storeMulAA);
+		releaseUnusedLargeVector(data.storeMulAS);
+		releaseUnusedLargeVector(data.storeDivAA);
+		releaseUnusedLargeVector(data.storeDivAS);
+		releaseUnusedLargeVector(data.storeDivSA);
+
+		releaseUnusedLargeVector(data.setS);
+		releaseUnusedLargeVector(data.storeR);
+		releaseUnusedLargeVector(data.storeA);
+		releaseUnusedLargeVector(data.storeS);
+		releaseUnusedLargeVector(data.storeFmaFmaAddProducts);
+		releaseUnusedLargeVector(data.storeFmaPlusFmas);
+		releaseUnusedLargeVector(data.storeNestedFmas);
+		releaseUnusedLargeVector(data.storeCompoundFmas);
+		releaseUnusedLargeVector(data.ops);
 	}
 
 	static void compileFusionInto(Engine &engine, const std::vector<Assignment> &assignments,
@@ -3180,9 +3539,26 @@ struct Compiler {
 				continue;
 			}
 
+			internal::StoreCompoundFma compoundFma{};
+			if (makeDirectCompoundFmaStore(engine, assignment, compoundFma)) {
+				continue;
+			}
+
 			internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
 			if (singleAssignment &&
 			    makeDirectFmaFmaAddProductStore(engine, assignment, fmaFmaAddProduct)) {
+				continue;
+			}
+
+			internal::StoreFmaPlusFma fmaPlusFma{};
+			if (singleAssignment &&
+			    makeDirectFmaPlusFmaStore(engine, assignment, fmaPlusFma)) {
+				continue;
+			}
+
+			internal::StoreNestedFma nestedFma{};
+			if (singleAssignment &&
+			    makeDirectNestedFmaStore(engine, assignment, nestedFma)) {
 				continue;
 			}
 
@@ -3201,6 +3577,12 @@ struct Compiler {
 					continue;
 				}
 
+				internal::StoreCompoundFma compoundFma{};
+				if (makeDirectCompoundFmaStore(engine, assignments[i], compoundFma)) {
+					appendDirectCompoundFmaStore(plan, compoundFma);
+					continue;
+				}
+
 				internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
 				if (singleAssignment &&
 				    makeDirectFmaFmaAddProductStore(engine, assignments[i],
@@ -3209,9 +3591,24 @@ struct Compiler {
 					continue;
 				}
 
+				internal::StoreFmaPlusFma fmaPlusFma{};
+				if (singleAssignment &&
+				    makeDirectFmaPlusFmaStore(engine, assignments[i], fmaPlusFma)) {
+					appendDirectFmaPlusFmaStore(plan, fmaPlusFma);
+					continue;
+				}
+
+				internal::StoreNestedFma nestedFma{};
+				if (singleAssignment &&
+				    makeDirectNestedFmaStore(engine, assignments[i], nestedFma)) {
+					appendDirectNestedFmaStore(plan, nestedFma);
+					continue;
+				}
+
 				throw std::logic_error{"直接実行用の式として判定された代入を生成できません。"};
 			}
 
+			compactUnusedPlanStorage(plan);
 			return;
 		}
 
@@ -3223,6 +3620,11 @@ struct Compiler {
 				continue;
 			}
 
+			internal::StoreCompoundFma compoundFma{};
+			if (makeDirectCompoundFmaStore(engine, assignment, compoundFma)) {
+				continue;
+			}
+
 			countUses(engine, assignment.expr_.nodeId(), context);
 		}
 
@@ -3231,6 +3633,13 @@ struct Compiler {
 			PendingStore store{};
 			if (makeDirectAssignmentStore(engine, assignment, store)) {
 				stores.push_back(store);
+				continue;
+			}
+
+			internal::StoreCompoundFma compoundFma{};
+			if (makeDirectCompoundFmaStore(engine, assignment, compoundFma)) {
+				appendOp(plan, plan.data_.storeCompoundFmas, executeStoreCompoundFma,
+				         compoundFma);
 				continue;
 			}
 
@@ -3248,6 +3657,8 @@ struct Compiler {
 		for (const PendingStore &store : stores) {
 			emitPendingStore(plan, store, context);
 		}
+
+		compactUnusedPlanStorage(plan);
 	}
 
 	static void clearScheduledPlanForReuse(ScheduledPlan &scheduled) noexcept
@@ -3256,6 +3667,19 @@ struct Compiler {
 		for (FusionPlan &stage : scheduled.data_.stages) {
 			clearFusionPlanForReuse(stage);
 		}
+	}
+
+	static void resizeScheduledStages(ScheduledPlan &scheduled, std::size_t stageCount)
+	{
+		const std::size_t capacity{scheduled.data_.stages.capacity()};
+		if (stageCount <= 1 && capacity > 4) {
+			std::vector<FusionPlan> compactStages{};
+			compactStages.resize(stageCount);
+			scheduled.data_.stages.swap(compactStages);
+			return;
+		}
+
+		scheduled.data_.stages.resize(stageCount);
 	}
 
 	static void compileScheduledInto(Engine &engine, const std::vector<Assignment> &assignments,
@@ -3272,7 +3696,7 @@ struct Compiler {
 		scheduled.data_.blockCount =
 		    assignments.front().out_->variable.array().blockCount();
 		scheduled.data_.stages.reserve(stages.size());
-		scheduled.data_.stages.resize(stages.size());
+		resizeScheduledStages(scheduled, stages.size());
 
 		for (std::size_t i{}; i < stages.size(); ++i) {
 			compileFusionInto(engine, assignments, stages[i],
@@ -3408,9 +3832,7 @@ void Engine::deferCompoundAssign(Array &out, const Expression &expr, internal::A
 void Engine::execute()
 {
 	if (impl_->pendingAssignments.empty()) {
-		internal::Compiler::rememberExpressionReserve(*this);
-		impl_->nodes.clear();
-		impl_->nodeKeyIndex.clear();
+		internal::Compiler::clearExpressionNodes(*this);
 		return;
 	}
 
@@ -3418,9 +3840,7 @@ void Engine::execute()
 	    internal::Compiler::compileOrReuseScheduled(*this, impl_->pendingAssignments)};
 	internal::Compiler::rememberAssignmentReserve(*this);
 	impl_->pendingAssignments.clear();
-	internal::Compiler::rememberExpressionReserve(*this);
-	impl_->nodes.clear();
-	impl_->nodeKeyIndex.clear();
+	internal::Compiler::clearExpressionNodes(*this);
 	plan.execute();
 }
 
