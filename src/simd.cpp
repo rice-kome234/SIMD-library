@@ -1,4 +1,4 @@
-#include "simd_internal.h"
+﻿#include "simd_internal.h"
 
 #include <algorithm>
 #include <cassert>
@@ -1178,13 +1178,13 @@ struct Compiler {
 	static constexpr int HASH_COMBINE_LEFT_SHIFT{6};
 	static constexpr int HASH_COMBINE_RIGHT_SHIFT{2};
 
-	// ハッシュ値をばらけさせるための定数。桁区切りで64bit値として読みやすくする。
+	// ハッシュ値をばらけさせるための定数
 	static constexpr std::uint64_t HASH_MIX_FIRST_MULTIPLIER{
-		std::uint64_t{0xff51'afd7'ed55'8ccd}};
+		std::uint64_t{0xff51afd7ed558ccd}};
 	static constexpr std::uint64_t HASH_MIX_SECOND_MULTIPLIER{
-		std::uint64_t{0xc4ce'b9fe'1a85'ec53}};
+		std::uint64_t{0xc4ceb9fe1a85ec53}};
 	static constexpr std::uint64_t HASH_COMBINE_GOLDEN_RATIO{
-		std::uint64_t{0x9e37'79b9'7f4a'7c15}};
+		std::uint64_t{0x9e3779b97f4a7c15}};
 
 	static std::uint32_t floatBits(float value) noexcept
 	{
