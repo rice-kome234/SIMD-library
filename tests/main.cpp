@@ -1,4 +1,4 @@
-#include "benchmark.h"
+﻿#include "benchmark.h"
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -12,8 +12,8 @@
 namespace
 {
 // ここを変更すると、すべてのベンチマーク条件をまとめて調整できます。
-constexpr std::size_t ELEMENT_COUNT{static_cast<std::size_t>(1) << 23};
-constexpr int REPEAT_COUNT{100};
+constexpr std::size_t ELEMENT_COUNT{static_cast<std::size_t>(1) << 20};
+constexpr int REPEAT_COUNT{512};
 constexpr float DELTA_TIME{0.016f};
 constexpr std::size_t BATCHED_OUTPUT_COUNT{16};
 

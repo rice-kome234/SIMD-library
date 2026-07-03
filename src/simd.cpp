@@ -1174,6 +1174,17 @@ namespace internal
 {
 struct Compiler {
 	static constexpr std::size_t NODE_INDEX_THRESHOLD{32};
+	static constexpr int HASH_MIX_SHIFT{33};
+	static constexpr int HASH_COMBINE_LEFT_SHIFT{6};
+	static constexpr int HASH_COMBINE_RIGHT_SHIFT{2};
+
+	// ハッシュ値をばらけさせるための定数。桁区切りで64bit値として読みやすくする。
+	static constexpr std::uint64_t HASH_MIX_FIRST_MULTIPLIER{
+		std::uint64_t{0xff51'afd7'ed55'8ccd}};
+	static constexpr std::uint64_t HASH_MIX_SECOND_MULTIPLIER{
+		std::uint64_t{0xc4ce'b9fe'1a85'ec53}};
+	static constexpr std::uint64_t HASH_COMBINE_GOLDEN_RATIO{
+		std::uint64_t{0x9e37'79b9'7f4a'7c15}};
 
 	static std::uint32_t floatBits(float value) noexcept
 	{
@@ -1182,24 +1193,50 @@ struct Compiler {
 		return bits;
 	}
 
-	static std::uint64_t mix(std::uint64_t x) noexcept
+	static std::uint64_t foldShiftedBits(std::uint64_t value) noexcept
 	{
-		constexpr std::uint64_t firstMultiplier{0xff51afd7ed558ccd};
-		constexpr std::uint64_t secondMultiplier{0xc4ceb9fe1a85ec53};
+		return value ^ (value >> HASH_MIX_SHIFT);
+	}
 
-		x ^= x >> 33;
-		x *= firstMultiplier;
-		x ^= x >> 33;
-		x *= secondMultiplier;
-		x ^= x >> 33;
-		return x;
+	static std::uint64_t xorHashValues(std::uint64_t lhs, std::uint64_t rhs) noexcept
+	{
+		return lhs ^ rhs;
+	}
+
+	static std::uint64_t mixHashInput(std::uint64_t value) noexcept
+	{
+		return foldShiftedBits(value + HASH_COMBINE_GOLDEN_RATIO);
+	}
+
+	static std::uint64_t combineSeedOffset(std::uint64_t seed) noexcept
+	{
+		return (seed << HASH_COMBINE_LEFT_SHIFT) + (seed >> HASH_COMBINE_RIGHT_SHIFT);
+	}
+
+	static std::uint64_t combineHashStep(std::uint64_t seed, std::uint64_t value) noexcept
+	{
+		const std::uint64_t mixedValue{mixHashInput(value)};
+		const std::uint64_t valueWithOffset{
+			mixedValue + HASH_COMBINE_GOLDEN_RATIO + combineSeedOffset(seed)};
+
+		return xorHashValues(seed, valueWithOffset);
+	}
+
+	static std::uint64_t mix(std::uint64_t value) noexcept
+	{
+		value = foldShiftedBits(value);
+		value *= HASH_MIX_FIRST_MULTIPLIER;
+		value = foldShiftedBits(value);
+		value *= HASH_MIX_SECOND_MULTIPLIER;
+		value = foldShiftedBits(value);
+		return value;
 	}
 
 	static std::uint64_t combineHash(std::uint64_t a, std::uint64_t b, std::uint64_t c) noexcept
 	{
-		constexpr std::uint64_t goldenRatio{0x9e3779b97f4a7c15};
+		const std::uint64_t combined{xorHashValues(combineHashStep(a, b), mixHashInput(c))};
 
-		return mix(a ^ (b + goldenRatio + (a << 6) + (a >> 2)) ^ c);
+		return mix(combined);
 	}
 
 	static void requireSameShape(const FloatArray &expected, const FloatArray &actual,
