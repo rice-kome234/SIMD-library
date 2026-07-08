@@ -1,10 +1,9 @@
 {
-  "version": 3,
+  "version": 6,
   "configurePresets": [
     {
       "name": "windows-base",
       "hidden": true,
-      "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "installDir": "${sourceDir}/out/install/${presetName}",
       "cacheVariables": {
@@ -20,48 +19,207 @@
       }
     },
     {
-      "name": "x64-debug",
-      "displayName": "x64 Debug",
+      "name": "x64-base",
+      "hidden": true,
       "inherits": "windows-base",
       "architecture": {
         "value": "x64",
         "strategy": "external"
-      },
+      }
+    },
+    {
+      "name": "x64-debug",
+      "displayName": "x64 Debug /MDd",
+      "inherits": "x64-base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL",
+        "SIMD_LIBRARY_DIST_NAME": "mdd-debug"
       }
     },
     {
       "name": "x64-release",
-      "displayName": "x64 Release",
+      "displayName": "x64 Release /MD",
+      "inherits": "x64-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL",
+        "SIMD_LIBRARY_DIST_NAME": "md-release"
+      }
+    },
+    {
+      "name": "x64-debug-mtd",
+      "displayName": "x64 Debug /MTd",
+      "inherits": "x64-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug",
+        "SIMD_LIBRARY_DIST_NAME": "mtd-debug"
+      }
+    },
+    {
+      "name": "x64-release-mt",
+      "displayName": "x64 Release /MT",
+      "inherits": "x64-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "SIMD_LIBRARY_DIST_NAME": "mt-release"
+      }
+    },
+    {
+      "name": "x64-package-debug-mdd",
+      "displayName": "Package Debug /MDd",
       "inherits": "x64-debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "SIMD_LIBRARY_BUILD_TESTS": "OFF",
+        "SIMD_LIBRARY_BUILD_EXAMPLES": "OFF",
+        "SIMD_LIBRARY_DIST_ON_BUILD": "ON"
+      }
+    },
+    {
+      "name": "x64-package-release-md",
+      "displayName": "Package Release /MD",
+      "inherits": "x64-release",
+      "cacheVariables": {
+        "SIMD_LIBRARY_BUILD_TESTS": "OFF",
+        "SIMD_LIBRARY_BUILD_EXAMPLES": "OFF",
+        "SIMD_LIBRARY_DIST_ON_BUILD": "ON"
+      }
+    },
+    {
+      "name": "x64-package-debug-mtd",
+      "displayName": "Package Debug /MTd",
+      "inherits": "x64-debug-mtd",
+      "cacheVariables": {
+        "SIMD_LIBRARY_BUILD_TESTS": "OFF",
+        "SIMD_LIBRARY_BUILD_EXAMPLES": "OFF",
+        "SIMD_LIBRARY_DIST_ON_BUILD": "ON"
+      }
+    },
+    {
+      "name": "x64-package-release-mt",
+      "displayName": "Package Release /MT",
+      "inherits": "x64-release-mt",
+      "cacheVariables": {
+        "SIMD_LIBRARY_BUILD_TESTS": "OFF",
+        "SIMD_LIBRARY_BUILD_EXAMPLES": "OFF",
+        "SIMD_LIBRARY_DIST_ON_BUILD": "ON"
       }
     }
   ],
   "buildPresets": [
     {
       "name": "debug",
-      "displayName": "Build Debug",
-      "configurePreset": "x64-debug"
+      "displayName": "Build Debug /MDd",
+      "configurePreset": "x64-debug",
+      "configuration": "Debug"
     },
     {
       "name": "release",
-      "displayName": "Build Release",
-      "configurePreset": "x64-release"
+      "displayName": "Build Release /MD",
+      "configurePreset": "x64-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "debug-mtd",
+      "displayName": "Build Debug /MTd",
+      "configurePreset": "x64-debug-mtd",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release-mt",
+      "displayName": "Build Release /MT",
+      "configurePreset": "x64-release-mt",
+      "configuration": "Release"
     },
     {
       "name": "package-release",
-      "displayName": "Package simd.h + simd.lib Release",
-      "configurePreset": "x64-release",
-      "targets": ["simd_dist"]
+      "displayName": "Package simd.h + simd.lib Release /MD",
+      "configurePreset": "x64-package-release-md",
+      "configuration": "Release"
+    },
+    {
+      "name": "package-debug-mdd",
+      "displayName": "Package simd.h + simd.lib Debug /MDd",
+      "configurePreset": "x64-package-debug-mdd",
+      "configuration": "Debug"
+    },
+    {
+      "name": "package-release-mt",
+      "displayName": "Package simd.h + simd.lib Release /MT",
+      "configurePreset": "x64-package-release-mt",
+      "configuration": "Release"
+    },
+    {
+      "name": "package-debug-mtd",
+      "displayName": "Package simd.h + simd.lib Debug /MTd",
+      "configurePreset": "x64-package-debug-mtd",
+      "configuration": "Debug"
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "package-release",
+      "displayName": "Configure and package Release /MD",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "x64-package-release-md"
+        },
+        {
+          "type": "build",
+          "name": "package-release"
+        }
+      ]
+    },
+    {
+      "name": "package-debug-mdd",
+      "displayName": "Configure and package Debug /MDd",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "x64-package-debug-mdd"
+        },
+        {
+          "type": "build",
+          "name": "package-debug-mdd"
+        }
+      ]
+    },
+    {
+      "name": "package-release-mt",
+      "displayName": "Configure and package Release /MT",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "x64-package-release-mt"
+        },
+        {
+          "type": "build",
+          "name": "package-release-mt"
+        }
+      ]
+    },
+    {
+      "name": "package-debug-mtd",
+      "displayName": "Configure and package Debug /MTd",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "x64-package-debug-mtd"
+        },
+        {
+          "type": "build",
+          "name": "package-debug-mtd"
+        }
+      ]
     }
   ],
   "testPresets": [
     {
       "name": "benchmark-release",
-      "displayName": "Run benchmark Release",
+      "displayName": "Run benchmark Release /MD",
       "configurePreset": "x64-release",
       "output": {
         "outputOnFailure": true,
