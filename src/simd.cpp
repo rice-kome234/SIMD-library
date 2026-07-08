@@ -978,20 +978,6 @@ void executeDirectStoresBlock(const internal::FusionPlanData &plan, std::size_t 
 		op.out[blockIndex] = multiplyAddBlock(inner, op.mul[blockIndex], op.add[blockIndex]);
 	}
 
-	for (const internal::StoreFmaFmaAddProduct &op : plan.storeFmaFmaAddProducts) {
-		const SimdBlock left{
-		    multiplyAddBlock(op.leftA[blockIndex], op.leftB[blockIndex],
-		                     op.leftC[blockIndex])};
-		const SimdBlock right{
-		    multiplyAddBlock(op.rightA[blockIndex], op.rightB[blockIndex],
-		                     op.rightC[blockIndex])};
-		const SimdBlock extra{
-		    mulBlock(addBlock(op.addLeftA[blockIndex], op.addLeftB[blockIndex]),
-		             addBlock(op.addRightA[blockIndex], op.addRightB[blockIndex]))};
-
-		op.out[blockIndex] = multiplyAddBlock(left, right, extra);
-	}
-
 	for (const internal::StoreFmaAAA &op : plan.storeFmaAAA) {
 		op.out[blockIndex] =
 		    multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
@@ -2050,13 +2036,6 @@ struct Compiler {
 		++plan.data_.directInstructionCount;
 	}
 
-	static void appendDirectFmaFmaAddProductStore(
-	    FusionPlan &plan, const internal::StoreFmaFmaAddProduct &store)
-	{
-		plan.data_.storeFmaFmaAddProducts.push_back(store);
-		++plan.data_.directInstructionCount;
-	}
-
 	static void appendDirectFmaPlusFmaStore(FusionPlan &plan,
 	                                        const internal::StoreFmaPlusFma &store)
 	{
@@ -2991,7 +2970,6 @@ struct Compiler {
 
 	struct PlanReserveEstimate {
 		std::size_t instructionCount{};
-		std::size_t storeFmaFmaAddProduct{};
 		std::size_t storeFmaPlusFma{};
 		std::size_t storeNestedFma{};
 		std::size_t storeCompoundFma{};
@@ -3093,21 +3071,6 @@ struct Compiler {
 		return true;
 	}
 
-	static bool makeLeafAddParts(const Engine &engine, std::size_t nodeId,
-	                             const SimdBlock *&a, const SimdBlock *&b) noexcept
-	{
-		const ExprNode &node{engine.impl_->nodes[nodeId]};
-		if (node.kind != NodeKind::Add) {
-			return false;
-		}
-
-		if (!makeArrayLeaf(engine, node.lhs, a)) {
-			return false;
-		}
-
-		return makeArrayLeaf(engine, node.rhs, b);
-	}
-
 	static bool makeLeafFmaParts(const Engine &engine, std::size_t nodeId,
 	                             const SimdBlock *&a, const SimdBlock *&b,
 	                             const SimdBlock *&c) noexcept
@@ -3128,59 +3091,6 @@ struct Compiler {
 		}
 
 		return makeArrayLeaf(engine, addId, c);
-	}
-
-	static bool makeFmaFmaAddProductParts(
-	    const Engine &engine, std::size_t productId, std::size_t addProductId,
-	    internal::StoreFmaFmaAddProduct &store) noexcept
-	{
-		const ExprNode &product{engine.impl_->nodes[productId]};
-		const ExprNode &addProduct{engine.impl_->nodes[addProductId]};
-		if (product.kind != NodeKind::Mul || addProduct.kind != NodeKind::Mul) {
-			return false;
-		}
-
-		if (!makeLeafFmaParts(engine, product.lhs, store.leftA, store.leftB,
-		                      store.leftC)) {
-			return false;
-		}
-
-		if (!makeLeafFmaParts(engine, product.rhs, store.rightA, store.rightB,
-		                      store.rightC)) {
-			return false;
-		}
-
-		if (!makeLeafAddParts(engine, addProduct.lhs, store.addLeftA,
-		                      store.addLeftB)) {
-			return false;
-		}
-
-		return makeLeafAddParts(engine, addProduct.rhs, store.addRightA,
-		                        store.addRightB);
-	}
-
-	static bool makeDirectFmaFmaAddProductStore(
-	    const Engine &engine, const Assignment &assignment,
-	    internal::StoreFmaFmaAddProduct &store) noexcept
-	{
-		if (assignment.kind != AssignmentKind::Assign) {
-			return false;
-		}
-
-		const ExprNode &root{engine.impl_->nodes[assignment.expr_.nodeId()]};
-		if (root.kind != NodeKind::Add) {
-			return false;
-		}
-
-		store = internal::StoreFmaFmaAddProduct{};
-		store.out = assignment.out_->variable.array().data();
-		if (makeFmaFmaAddProductParts(engine, root.lhs, root.rhs, store)) {
-			return true;
-		}
-
-		store = internal::StoreFmaFmaAddProduct{};
-		store.out = assignment.out_->variable.array().data();
-		return makeFmaFmaAddProductParts(engine, root.rhs, root.lhs, store);
 	}
 
 	static bool makeDirectFmaPlusFmaStore(const Engine &engine,
@@ -3307,14 +3217,6 @@ struct Compiler {
 				continue;
 			}
 
-			internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
-			if (singleAssignment &&
-			    makeDirectFmaFmaAddProductStore(engine, assignment, fmaFmaAddProduct)) {
-				++estimate.storeFmaFmaAddProduct;
-				++estimate.instructionCount;
-				continue;
-			}
-
 			internal::StoreFmaPlusFma fmaPlusFma{};
 			if (singleAssignment &&
 			    makeDirectFmaPlusFmaStore(engine, assignment, fmaPlusFma)) {
@@ -3361,7 +3263,6 @@ struct Compiler {
 	static void reservePlanStorage(FusionPlan &plan, const PlanReserveEstimate &estimate)
 	{
 		plan.data_.ops.reserve(estimate.instructionCount);
-		plan.data_.storeFmaFmaAddProducts.reserve(estimate.storeFmaFmaAddProduct);
 		plan.data_.storeFmaPlusFmas.reserve(estimate.storeFmaPlusFma);
 		plan.data_.storeNestedFmas.reserve(estimate.storeNestedFma);
 		plan.data_.storeCompoundFmas.reserve(estimate.storeCompoundFma);
@@ -3464,7 +3365,6 @@ struct Compiler {
 		data.storeR.clear();
 		data.storeA.clear();
 		data.storeS.clear();
-		data.storeFmaFmaAddProducts.clear();
 		data.storeFmaPlusFmas.clear();
 		data.storeNestedFmas.clear();
 		data.storeCompoundFmas.clear();
@@ -3548,7 +3448,6 @@ struct Compiler {
 		releaseUnusedLargeVector(data.storeR);
 		releaseUnusedLargeVector(data.storeA);
 		releaseUnusedLargeVector(data.storeS);
-		releaseUnusedLargeVector(data.storeFmaFmaAddProducts);
 		releaseUnusedLargeVector(data.storeFmaPlusFmas);
 		releaseUnusedLargeVector(data.storeNestedFmas);
 		releaseUnusedLargeVector(data.storeCompoundFmas);
@@ -3578,12 +3477,6 @@ struct Compiler {
 
 			internal::StoreCompoundFma compoundFma{};
 			if (makeDirectCompoundFmaStore(engine, assignment, compoundFma)) {
-				continue;
-			}
-
-			internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
-			if (singleAssignment &&
-			    makeDirectFmaFmaAddProductStore(engine, assignment, fmaFmaAddProduct)) {
 				continue;
 			}
 
@@ -3617,14 +3510,6 @@ struct Compiler {
 				internal::StoreCompoundFma compoundFma{};
 				if (makeDirectCompoundFmaStore(engine, assignments[i], compoundFma)) {
 					appendDirectCompoundFmaStore(plan, compoundFma);
-					continue;
-				}
-
-				internal::StoreFmaFmaAddProduct fmaFmaAddProduct{};
-				if (singleAssignment &&
-				    makeDirectFmaFmaAddProductStore(engine, assignments[i],
-				                                    fmaFmaAddProduct)) {
-					appendDirectFmaFmaAddProductStore(plan, fmaFmaAddProduct);
 					continue;
 				}
 
