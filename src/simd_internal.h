@@ -392,20 +392,6 @@ struct StoreS {
 	SimdBlock a;
 };
 
-struct StoreFmaFmaAddProduct {
-	SimdBlock *out{};
-	const SimdBlock *leftA{};
-	const SimdBlock *leftB{};
-	const SimdBlock *leftC{};
-	const SimdBlock *rightA{};
-	const SimdBlock *rightB{};
-	const SimdBlock *rightC{};
-	const SimdBlock *addLeftA{};
-	const SimdBlock *addLeftB{};
-	const SimdBlock *addRightA{};
-	const SimdBlock *addRightB{};
-};
-
 struct StoreFmaPlusFma {
 	SimdBlock *out{};
 	const SimdBlock *leftA{};

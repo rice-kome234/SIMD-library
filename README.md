@@ -21,11 +21,19 @@ Visual Studio のジェネレーターでは、`build-cmake\Release\simd.lib` �
 
 ## Visual Studioでの実行
 
-Visual Studioでフォルダーを開く場合は、`CMakePresets.json` の `x64 Debug` または `x64 Release` を選べます。
-通常のビルドプリセットは `Build Debug` と `Build Release` です。
+Visual Studioでフォルダーを開く場合は、`CMakePresets.json` から実行時ライブラリ別の構成を選べます。
+
+```text
+x64 Debug /MDd
+x64 Release /MD
+x64 Debug /MTd
+x64 Release /MT
+```
+
+通常のビルドプリセットは `Build Debug /MDd`、`Build Release /MD`、`Build Debug /MTd`、`Build Release /MT` です。
 
 F5で実行する場合は、実行対象から `simd_benchmark` または `simd_minimal_example` を選びます。
-配布用ファイルだけを作りたい場合は、ビルドプリセットから `Package simd.h + simd.lib Release` を選びます。
+配布用ファイルだけを作りたい場合は、ビルドプリセットから `Package simd.h + simd.lib ...` を選びます。
 
 ## ライブラリの生成
 
@@ -33,10 +41,26 @@ F5で実行する場合は、実行対象から `simd_benchmark` または `simd
 アプリケーション側は公開インターフェースを `simd.h` から参照し、実装本体は `simd.lib` としてリンクします。
 
 ```powershell
-cmake --build --preset package-release
+cmake --workflow --preset package-release
 ```
 
-`build-cmake` を使っている場合は、次のようにターゲットを指定します。
+`package-release` は Release `/MD` 用です。Debug `/MTd` 用のライブラリを作りたい場合は、次の preset を使います。
+
+```powershell
+cmake --workflow --preset package-debug-mtd
+```
+
+Release `/MT` 用のライブラリを作りたい場合は、次の preset を使います。
+
+```powershell
+cmake --workflow --preset package-release-mt
+```
+
+他にも `package-debug-mdd` を選べます。`workflow` は configure と build をまとめて実行します。Visual StudioやVS Codeで選ぶ場合は、`Package ...` のプリセットを選びます。`Build Release /MT` は通常ビルドだけを行います。
+
+利用側のプロジェクトが `/MD` なら `/MD` で作った `simd.lib`、`/MTd` なら `/MTd` で作った `simd.lib` をリンクしてください。MSVCの実行時ライブラリが合っていないと、リンク時に `RuntimeLibrary` の不一致が出ることがあります。
+
+`build-cmake` を使っている場合は、次のようにターゲットを指定します。この場合、現在のCMake構成で指定されている実行時ライブラリで `dist/manual/` に生成されます。
 
 ```powershell
 cmake --build build-cmake --config Release --target simd_dist
@@ -46,8 +70,21 @@ cmake --build build-cmake --config Release --target simd_dist
 
 ```text
 dist/
-  simd.h
-  simd.lib
+  manual/
+    simd.h
+    simd.lib
+  md-release/
+    simd.h
+    simd.lib
+  mdd-debug/
+    simd.h
+    simd.lib
+  mt-release/
+    simd.h
+    simd.lib
+  mtd-debug/
+    simd.h
+    simd.lib
 ```
 
 `src/` や `tests/` は含めないため、利用者は実装の詳細を意識せずにライブラリとして組み込めます。
