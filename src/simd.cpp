@@ -15,6 +15,7 @@ using internal::CompileContext;
 using internal::CompileGroup;
 using internal::divBlock;
 using internal::ExprNode;
+using internal::EXECUTION_BLOCK_TILE;
 using internal::FloatArray;
 using internal::FusionPlan;
 using internal::KeyIndex;
@@ -44,13 +45,31 @@ internal::FloatArray::FloatArray(std::size_t elementCount) { resize(elementCount
 
 void internal::FloatArray::resize(std::size_t elementCount)
 {
+	const std::size_t oldElementCount{elementCount_};
+	const std::size_t oldBlockCount{blocks_.size()};
+	const SimdBlock *oldData{blocks_.data()};
+
 	elementCount_ = elementCount;
 	blocks_.assign((elementCount + SIMD_WIDTH - 1) / SIMD_WIDTH, zeroBlock());
+
+	if (oldElementCount != elementCount_ || oldBlockCount != blocks_.size() ||
+	    oldData != blocks_.data()) {
+		advanceStorageGeneration();
+	}
 }
 
 std::size_t internal::FloatArray::elementCount() const noexcept { return elementCount_; }
 
 std::size_t internal::FloatArray::blockCount() const noexcept { return blocks_.size(); }
+
+std::uint32_t internal::FloatArray::arrayId() const noexcept { return arrayId_; }
+
+std::uint64_t internal::FloatArray::storageGeneration() const noexcept
+{
+	return storageGeneration_;
+}
+
+void internal::FloatArray::setArrayId(std::uint32_t arrayId) noexcept { arrayId_ = arrayId; }
 
 SimdBlock &internal::FloatArray::block(std::size_t index) noexcept { return blocks_[index]; }
 
@@ -84,8 +103,7 @@ void internal::FloatArray::assign(std::size_t elementCount, float value)
 void internal::FloatArray::copyFrom(const FloatArray &source)
 {
 	if (elementCount_ != source.elementCount_) {
-		*this = source;
-		return;
+		resize(source.elementCount_);
 	}
 
 	std::copy(source.blocks_.begin(), source.blocks_.end(), blocks_.begin());
@@ -109,6 +127,7 @@ void internal::FloatArray::push_back(float value)
 	}
 
 	++elementCount_;
+	advanceStorageGeneration();
 	setElement(index, value);
 }
 
@@ -183,6 +202,14 @@ void internal::FloatArray::setElement(std::size_t index, float value) noexcept
 	blocks_[blockIndex] = loadAlignedBlock(temp);
 }
 
+void internal::FloatArray::advanceStorageGeneration() noexcept
+{
+	++storageGeneration_;
+	if (storageGeneration_ == 0) {
+		storageGeneration_ = 1;
+	}
+}
+
 internal::Variable::Variable(Engine *engine, FloatArray *array) noexcept
     : engine_{engine}, array_{array}
 {
@@ -210,6 +237,12 @@ internal::ArrayData::ArrayData(Engine &engine, std::size_t elementCount)
 Array::Array(Engine &engine, std::size_t elementCount)
     : impl_{std::make_unique<internal::ArrayData>(engine, elementCount)}
 {
+	if (engine.impl_->nextArrayId == 0) {
+		throw std::length_error{"Engineで管理できる配列数を超えました。"};
+	}
+
+	impl_->storage.setArrayId(engine.impl_->nextArrayId);
+	++engine.impl_->nextArrayId;
 }
 
 Array::Array(Engine &engine, const std::vector<float> &values) : Array{engine} { copyFrom(values); }
@@ -941,24 +974,104 @@ void executeStoreCompoundFma(const internal::FusionPlanData &plan, std::size_t b
 	}
 }
 
-void executeDirectStoresBlock(const internal::FusionPlanData &plan, std::size_t blockIndex) noexcept
+template <internal::SingleOpExecutor EXECUTOR>
+void executeOperationTile(const internal::FusionPlanData &plan, std::size_t firstBlock,
+                          std::size_t blockCount, SimdBlock *regs,
+                          std::size_t index) noexcept
 {
-	for (const internal::StoreCompoundFma &op : plan.storeCompoundFmas) {
-		const SimdBlock value{
-		    multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex])};
-		const SimdBlock current{op.out[blockIndex]};
+	for (std::size_t offset{}; offset < blockCount; ++offset) {
+		EXECUTOR(plan, firstBlock + offset, regs + offset * MAX_REGISTERS, index);
+	}
+}
 
-		if (op.kind == internal::StoreCompoundKind::Add) {
-			op.out[blockIndex] = addBlock(current, value);
-		} else if (op.kind == internal::StoreCompoundKind::Sub) {
-			op.out[blockIndex] = subBlock(current, value);
-		} else if (op.kind == internal::StoreCompoundKind::Mul) {
-			op.out[blockIndex] = mulBlock(current, value);
-		} else {
-			op.out[blockIndex] = divBlock(current, value);
-		}
+internal::OpExecutor tiledExecutorFor(internal::SingleOpExecutor execute) noexcept
+{
+#define SIMD_TILED_EXECUTOR(EXECUTOR)                                                             \
+	if (execute == EXECUTOR) {                                                                  \
+		return executeOperationTile<EXECUTOR>;                                                \
 	}
 
+	SIMD_TILED_EXECUTOR(executeAddRR)
+	SIMD_TILED_EXECUTOR(executeAddRA)
+	SIMD_TILED_EXECUTOR(executeAddAR)
+	SIMD_TILED_EXECUTOR(executeAddAA)
+	SIMD_TILED_EXECUTOR(executeAddRS)
+	SIMD_TILED_EXECUTOR(executeAddAS)
+	SIMD_TILED_EXECUTOR(executeSubRR)
+	SIMD_TILED_EXECUTOR(executeSubRA)
+	SIMD_TILED_EXECUTOR(executeSubAR)
+	SIMD_TILED_EXECUTOR(executeSubAA)
+	SIMD_TILED_EXECUTOR(executeSubRS)
+	SIMD_TILED_EXECUTOR(executeSubAS)
+	SIMD_TILED_EXECUTOR(executeSubSR)
+	SIMD_TILED_EXECUTOR(executeSubSA)
+	SIMD_TILED_EXECUTOR(executeMulRR)
+	SIMD_TILED_EXECUTOR(executeMulRA)
+	SIMD_TILED_EXECUTOR(executeMulAR)
+	SIMD_TILED_EXECUTOR(executeMulAA)
+	SIMD_TILED_EXECUTOR(executeMulRS)
+	SIMD_TILED_EXECUTOR(executeMulAS)
+	SIMD_TILED_EXECUTOR(executeDivRR)
+	SIMD_TILED_EXECUTOR(executeDivRA)
+	SIMD_TILED_EXECUTOR(executeDivAR)
+	SIMD_TILED_EXECUTOR(executeDivAA)
+	SIMD_TILED_EXECUTOR(executeDivRS)
+	SIMD_TILED_EXECUTOR(executeDivAS)
+	SIMD_TILED_EXECUTOR(executeDivSR)
+	SIMD_TILED_EXECUTOR(executeDivSA)
+	SIMD_TILED_EXECUTOR(executeFmaRRR)
+	SIMD_TILED_EXECUTOR(executeFmaRRA)
+	SIMD_TILED_EXECUTOR(executeFmaRAA)
+	SIMD_TILED_EXECUTOR(executeFmaAAA)
+	SIMD_TILED_EXECUTOR(executeFmaASA)
+	SIMD_TILED_EXECUTOR(executeFmaRAS)
+	SIMD_TILED_EXECUTOR(executeFmaRSA)
+	SIMD_TILED_EXECUTOR(executeStoreFmaAAA)
+	SIMD_TILED_EXECUTOR(executeStoreFmaASA)
+	SIMD_TILED_EXECUTOR(executeStoreFmaRRR)
+	SIMD_TILED_EXECUTOR(executeStoreFmaRRA)
+	SIMD_TILED_EXECUTOR(executeStoreFmaRAA)
+	SIMD_TILED_EXECUTOR(executeStoreFmaRAS)
+	SIMD_TILED_EXECUTOR(executeStoreFmaRSA)
+	SIMD_TILED_EXECUTOR(executeStoreNegFmaAAA)
+	SIMD_TILED_EXECUTOR(executeStoreNegFmaASA)
+	SIMD_TILED_EXECUTOR(executeStoreAddAA)
+	SIMD_TILED_EXECUTOR(executeStoreAddAS)
+	SIMD_TILED_EXECUTOR(executeStoreSubAA)
+	SIMD_TILED_EXECUTOR(executeStoreSubAS)
+	SIMD_TILED_EXECUTOR(executeStoreSubSA)
+	SIMD_TILED_EXECUTOR(executeStoreMulAA)
+	SIMD_TILED_EXECUTOR(executeStoreMulAS)
+	SIMD_TILED_EXECUTOR(executeStoreDivAA)
+	SIMD_TILED_EXECUTOR(executeStoreDivAS)
+	SIMD_TILED_EXECUTOR(executeStoreDivSA)
+	SIMD_TILED_EXECUTOR(executeSetS)
+	SIMD_TILED_EXECUTOR(executeStoreR)
+	SIMD_TILED_EXECUTOR(executeStoreA)
+	SIMD_TILED_EXECUTOR(executeStoreS)
+	SIMD_TILED_EXECUTOR(executeStoreCompoundFma)
+
+#undef SIMD_TILED_EXECUTOR
+
+	assert(false);
+	return nullptr;
+}
+
+template <typename Op,
+          internal::InstructionBuffer<Op> internal::FusionPlanData::*BUCKET,
+          internal::SingleOpExecutor EXECUTOR>
+void executeDirectInstructionGroupBlock(const internal::FusionPlanData &plan,
+                                        std::size_t blockIndex) noexcept
+{
+	const internal::InstructionBuffer<Op> &instructions{plan.*BUCKET};
+	for (std::size_t index{}; index < instructions.size(); ++index) {
+		EXECUTOR(plan, blockIndex, nullptr, index);
+	}
+}
+
+void executeDirectFmaPlusFmaBlock(const internal::FusionPlanData &plan,
+                                  std::size_t blockIndex) noexcept
+{
 	for (const internal::StoreFmaPlusFma &op : plan.storeFmaPlusFmas) {
 		const SimdBlock left{
 		    multiplyAddBlock(op.leftA[blockIndex], op.leftB[blockIndex],
@@ -969,7 +1082,11 @@ void executeDirectStoresBlock(const internal::FusionPlanData &plan, std::size_t 
 
 		op.out[blockIndex] = addBlock(left, right);
 	}
+}
 
+void executeDirectNestedFmaBlock(const internal::FusionPlanData &plan,
+                                 std::size_t blockIndex) noexcept
+{
 	for (const internal::StoreNestedFma &op : plan.storeNestedFmas) {
 		const SimdBlock inner{
 		    multiplyAddBlock(op.innerA[blockIndex], op.innerB[blockIndex],
@@ -977,64 +1094,113 @@ void executeDirectStoresBlock(const internal::FusionPlanData &plan, std::size_t 
 
 		op.out[blockIndex] = multiplyAddBlock(inner, op.mul[blockIndex], op.add[blockIndex]);
 	}
+}
 
-	for (const internal::StoreFmaAAA &op : plan.storeFmaAAA) {
-		op.out[blockIndex] =
-		    multiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
+void executeDirectFmaFmaAddProductBlock(const internal::FusionPlanData &plan,
+                                        std::size_t blockIndex) noexcept
+{
+	for (const internal::StoreFmaFmaAddProduct &op : plan.storeFmaFmaAddProducts) {
+		const SimdBlock left{
+		    multiplyAddBlock(op.leftA[blockIndex], op.leftB[blockIndex],
+		                     op.leftC[blockIndex])};
+		const SimdBlock right{
+		    multiplyAddBlock(op.rightA[blockIndex], op.rightB[blockIndex],
+		                     op.rightC[blockIndex])};
+		const SimdBlock extra{
+		    mulBlock(addBlock(op.addLeftA[blockIndex], op.addLeftB[blockIndex]),
+		             addBlock(op.addRightA[blockIndex], op.addRightB[blockIndex]))};
+
+		op.out[blockIndex] = multiplyAddBlock(left, right, extra);
+	}
+}
+
+template <internal::DirectBlockExecutor EXECUTOR>
+void executeDirectGroupPlan(const internal::FusionPlanData &plan) noexcept
+{
+	for (std::size_t blockIndex{}; blockIndex < plan.blockCount; ++blockIndex) {
+		EXECUTOR(plan, blockIndex);
+	}
+}
+
+template <internal::DirectBlockExecutor EXECUTOR>
+void appendDirectGroup(internal::FusionPlanData &plan)
+{
+	plan.directGroups.push_back(
+	    internal::DirectGroupRef{EXECUTOR, executeDirectGroupPlan<EXECUTOR>});
+}
+
+template <typename Op,
+          internal::InstructionBuffer<Op> internal::FusionPlanData::*BUCKET,
+          internal::SingleOpExecutor EXECUTOR>
+void appendDirectInstructionGroupIfUsed(internal::FusionPlanData &plan)
+{
+	if ((plan.*BUCKET).empty()) {
+		return;
 	}
 
-	for (const internal::StoreFmaASA &op : plan.storeFmaASA) {
-		op.out[blockIndex] = multiplyAddBlock(op.a[blockIndex], op.b, op.c[blockIndex]);
+	appendDirectGroup<executeDirectInstructionGroupBlock<Op, BUCKET, EXECUTOR>>(plan);
+}
+
+void executeDirectStoresBlock(const internal::FusionPlanData &plan,
+                              std::size_t blockIndex) noexcept
+{
+	for (const internal::DirectGroupRef &group : plan.directGroups) {
+		group.executeBlock(plan, blockIndex);
+	}
+}
+
+void executeDirectMixedPlan(const internal::FusionPlanData &plan) noexcept
+{
+	for (std::size_t blockIndex{}; blockIndex < plan.blockCount; ++blockIndex) {
+		executeDirectStoresBlock(plan, blockIndex);
+	}
+}
+
+void selectDirectExecutor(internal::FusionPlanData &plan)
+{
+	plan.directGroups.clear();
+	plan.directGroups.reserve(18);
+
+	appendDirectInstructionGroupIfUsed<internal::StoreCompoundFma,
+	                                   &internal::FusionPlanData::storeCompoundFmas,
+	                                   executeStoreCompoundFma>(plan);
+
+	if (!plan.storeFmaPlusFmas.empty()) {
+		appendDirectGroup<executeDirectFmaPlusFmaBlock>(plan);
+	}
+	if (!plan.storeNestedFmas.empty()) {
+		appendDirectGroup<executeDirectNestedFmaBlock>(plan);
+	}
+	if (!plan.storeFmaFmaAddProducts.empty()) {
+		appendDirectGroup<executeDirectFmaFmaAddProductBlock>(plan);
 	}
 
-	for (const internal::StoreNegFmaAAA &op : plan.storeNegFmaAAA) {
-		op.out[blockIndex] =
-		    negativeMultiplyAddBlock(op.a[blockIndex], op.b[blockIndex], op.c[blockIndex]);
-	}
+#define SIMD_APPEND_DIRECT_GROUP(TYPE, BUCKET, EXECUTOR)                                           \
+	appendDirectInstructionGroupIfUsed<internal::TYPE, &internal::FusionPlanData::BUCKET,       \
+	                                   EXECUTOR>(plan)
 
-	for (const internal::StoreNegFmaASA &op : plan.storeNegFmaASA) {
-		op.out[blockIndex] =
-		    negativeMultiplyAddBlock(op.a[blockIndex], op.b, op.c[blockIndex]);
-	}
+	SIMD_APPEND_DIRECT_GROUP(StoreFmaAAA, storeFmaAAA, executeStoreFmaAAA);
+	SIMD_APPEND_DIRECT_GROUP(StoreFmaASA, storeFmaASA, executeStoreFmaASA);
+	SIMD_APPEND_DIRECT_GROUP(StoreNegFmaAAA, storeNegFmaAAA, executeStoreNegFmaAAA);
+	SIMD_APPEND_DIRECT_GROUP(StoreNegFmaASA, storeNegFmaASA, executeStoreNegFmaASA);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinaryAA, storeAddAA, executeStoreAddAA);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinaryAS, storeAddAS, executeStoreAddAS);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinaryAA, storeSubAA, executeStoreSubAA);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinaryAS, storeSubAS, executeStoreSubAS);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinarySA, storeSubSA, executeStoreSubSA);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinaryAA, storeMulAA, executeStoreMulAA);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinaryAS, storeMulAS, executeStoreMulAS);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinaryAA, storeDivAA, executeStoreDivAA);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinaryAS, storeDivAS, executeStoreDivAS);
+	SIMD_APPEND_DIRECT_GROUP(StoreBinarySA, storeDivSA, executeStoreDivSA);
 
-	for (const internal::StoreBinaryAA &op : plan.storeAddAA) {
-		op.out[blockIndex] = addBlock(op.a[blockIndex], op.b[blockIndex]);
-	}
+#undef SIMD_APPEND_DIRECT_GROUP
 
-	for (const internal::StoreBinaryAS &op : plan.storeAddAS) {
-		op.out[blockIndex] = addBlock(op.a[blockIndex], op.b);
-	}
-
-	for (const internal::StoreBinaryAA &op : plan.storeSubAA) {
-		op.out[blockIndex] = subBlock(op.a[blockIndex], op.b[blockIndex]);
-	}
-
-	for (const internal::StoreBinaryAS &op : plan.storeSubAS) {
-		op.out[blockIndex] = subBlock(op.a[blockIndex], op.b);
-	}
-
-	for (const internal::StoreBinarySA &op : plan.storeSubSA) {
-		op.out[blockIndex] = subBlock(op.a, op.b[blockIndex]);
-	}
-
-	for (const internal::StoreBinaryAA &op : plan.storeMulAA) {
-		op.out[blockIndex] = mulBlock(op.a[blockIndex], op.b[blockIndex]);
-	}
-
-	for (const internal::StoreBinaryAS &op : plan.storeMulAS) {
-		op.out[blockIndex] = mulBlock(op.a[blockIndex], op.b);
-	}
-
-	for (const internal::StoreBinaryAA &op : plan.storeDivAA) {
-		op.out[blockIndex] = divBlock(op.a[blockIndex], op.b[blockIndex]);
-	}
-
-	for (const internal::StoreBinaryAS &op : plan.storeDivAS) {
-		op.out[blockIndex] = divBlock(op.a[blockIndex], op.b);
-	}
-
-	for (const internal::StoreBinarySA &op : plan.storeDivSA) {
-		op.out[blockIndex] = divBlock(op.a, op.b[blockIndex]);
+	assert(!plan.directGroups.empty());
+	if (plan.directGroups.size() == 1) {
+		plan.directExecutor = plan.directGroups.front().executePlan;
+	} else {
+		plan.directExecutor = executeDirectMixedPlan;
 	}
 }
 
@@ -1047,30 +1213,34 @@ internal::FusionPlan::~FusionPlan() noexcept = default;
 void internal::FusionPlan::execute() const noexcept
 {
 	if (data_.directOnly) {
-		for (std::size_t blockIndex{}; blockIndex < data_.blockCount; ++blockIndex) {
-			executeDirectStoresBlock(data_, blockIndex);
-		}
-
+		assert(data_.directExecutor != nullptr);
+		data_.directExecutor(data_);
 		return;
 	}
 
-	SimdBlock regs[MAX_REGISTERS];
+	SimdBlock regs[MAX_REGISTERS * EXECUTION_BLOCK_TILE];
 
-	for (std::size_t blockIndex{}; blockIndex < data_.blockCount; ++blockIndex) {
-		executeBlock(blockIndex, regs);
+	for (std::size_t firstBlock{}; firstBlock < data_.blockCount;
+	     firstBlock += EXECUTION_BLOCK_TILE) {
+		const std::size_t blockCount{
+		    std::min(EXECUTION_BLOCK_TILE, data_.blockCount - firstBlock)};
+		executeBlocks(firstBlock, blockCount, regs);
 	}
 }
 
-void internal::FusionPlan::executeBlock(std::size_t blockIndex, SimdBlock *regs) const noexcept
+void internal::FusionPlan::executeBlocks(std::size_t firstBlock, std::size_t blockCount,
+                                         SimdBlock *regs) const noexcept
 {
 	if (data_.directOnly) {
-		executeDirectStoresBlock(data_, blockIndex);
+		for (std::size_t offset{}; offset < blockCount; ++offset) {
+			executeDirectStoresBlock(data_, firstBlock + offset);
+		}
 		return;
 	}
 
 	for (const internal::OpRef &ref : data_.ops) {
 		assert(ref.execute != nullptr);
-		ref.execute(data_, blockIndex, regs, ref.index);
+		ref.execute(data_, firstBlock, blockCount, regs, ref.index);
 	}
 }
 
@@ -1123,11 +1293,14 @@ void internal::ScheduledPlan::execute() const noexcept
 		return;
 	}
 
-	SimdBlock regs[MAX_REGISTERS];
+	SimdBlock regs[MAX_REGISTERS * EXECUTION_BLOCK_TILE];
 
-	for (std::size_t blockIndex{}; blockIndex < data_.blockCount; ++blockIndex) {
+	for (std::size_t firstBlock{}; firstBlock < data_.blockCount;
+	     firstBlock += EXECUTION_BLOCK_TILE) {
+		const std::size_t blockCount{
+		    std::min(EXECUTION_BLOCK_TILE, data_.blockCount - firstBlock)};
 		for (const FusionPlan &stage : data_.stages) {
-			stage.executeBlock(blockIndex, regs);
+			stage.executeBlocks(firstBlock, blockCount, regs);
 		}
 	}
 }
@@ -1286,6 +1459,15 @@ struct Compiler {
 		return lhs.node < rhs.node;
 	}
 
+	static internal::NodeId checkedNodeId(std::size_t value)
+	{
+		if (value >= INVALID_NODE) {
+			throw std::length_error{"式ノード数が内部上限を超えました。"};
+		}
+
+		return static_cast<internal::NodeId>(value);
+	}
+
 	static void rebuildNodeIndex(Engine &engine)
 	{
 		const std::vector<ExprNode> &nodes{engine.impl_->nodes};
@@ -1294,7 +1476,7 @@ struct Compiler {
 		nodeIndex.clear();
 		nodeIndex.reserve(nodes.size());
 		for (std::size_t nodeId{}; nodeId < nodes.size(); ++nodeId) {
-			nodeIndex.push_back(KeyIndex{nodes[nodeId].key, nodeId});
+			nodeIndex.push_back(KeyIndex{nodes[nodeId].key, checkedNodeId(nodeId)});
 		}
 
 		std::sort(nodeIndex.begin(), nodeIndex.end(), keyIndexLess);
@@ -1448,7 +1630,7 @@ struct Compiler {
 			}
 
 			reserveNodesFor(engine, 1);
-			const std::size_t nodeId{engine.impl_->nodes.size()};
+			const internal::NodeId nodeId{checkedNodeId(engine.impl_->nodes.size())};
 			engine.impl_->nodes.push_back(node);
 			return Expression{&engine, nodeId};
 		}
@@ -1469,7 +1651,7 @@ struct Compiler {
 		}
 
 		reserveNodesFor(engine, 1);
-		const std::size_t nodeId{engine.impl_->nodes.size()};
+		const internal::NodeId nodeId{checkedNodeId(engine.impl_->nodes.size())};
 		engine.impl_->nodes.push_back(node);
 		const KeyIndex insertLookup{node.key, nodeId};
 		const auto insertPosition{std::lower_bound(
@@ -1512,8 +1694,8 @@ struct Compiler {
 
 		ExprNode node{};
 		node.kind = kind;
-		node.lhs = lhs.nodeId();
-		node.rhs = rhs.nodeId();
+		node.lhs = checkedNodeId(lhs.nodeId());
+		node.rhs = checkedNodeId(rhs.nodeId());
 		if (kind == NodeKind::Add) {
 			node.key = combineHash(3, lhsKey, rhsKey);
 		} else if (kind == NodeKind::Sub) {
@@ -1596,16 +1778,34 @@ struct Compiler {
 		collectReads(engine, assignment.expr_.nodeId(), reads);
 	}
 
-	static void appendCacheArray(std::uint64_t &hash, const FloatArray &array) noexcept
+	static void appendArrayBinding(std::vector<internal::ArrayBinding> &bindings,
+	                               const FloatArray &array)
 	{
-		hash = combineHash(hash, reinterpret_cast<std::uintptr_t>(&array),
-		                   reinterpret_cast<std::uintptr_t>(array.data()));
-		hash = combineHash(hash, array.elementCount(), array.blockCount());
+		for (const internal::ArrayBinding &binding : bindings) {
+			if (binding.array == &array) {
+				return;
+			}
+		}
+
+		bindings.push_back(
+		    internal::ArrayBinding{&array, array.storageGeneration()});
 	}
 
 	static bool samePlanCacheKey(const PlanCacheKey &lhs, const PlanCacheKey &rhs) noexcept
 	{
 		return lhs.hash == rhs.hash && lhs.assignmentCount == rhs.assignmentCount;
+	}
+
+	static bool bindingsAreCurrent(
+	    const std::vector<internal::ArrayBinding> &bindings) noexcept
+	{
+		for (const internal::ArrayBinding &binding : bindings) {
+			if (binding.array->storageGeneration() != binding.storageGeneration) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	static const FloatArray *findFirstRead(const Engine &engine, std::size_t nodeId) noexcept
@@ -1644,18 +1844,34 @@ struct Compiler {
 		}
 	}
 
+	static std::uint32_t nextStageMark(Engine &engine)
+	{
+		std::vector<std::uint32_t> &marks{engine.impl_->stageWriteMarks};
+		if (marks.size() < engine.impl_->nextArrayId) {
+			marks.resize(engine.impl_->nextArrayId);
+		}
+
+		++engine.impl_->stageMarkGeneration;
+		if (engine.impl_->stageMarkGeneration == 0) {
+			std::fill(marks.begin(), marks.end(), 0);
+			engine.impl_->stageMarkGeneration = 1;
+		}
+
+		return engine.impl_->stageMarkGeneration;
+	}
+
 	static const std::vector<internal::AssignmentRange> &
 	buildStages(Engine &engine, const std::vector<Assignment> &assignments)
 	{
 		std::vector<internal::AssignmentRange> &ranges{engine.impl_->stageRanges};
-		std::vector<const FloatArray *> &currentWrites{engine.impl_->writeScratch};
 		std::vector<const FloatArray *> &reads{engine.impl_->readScratch};
+		std::vector<std::uint32_t> &writeMarks{engine.impl_->stageWriteMarks};
 
 		ranges.clear();
-		currentWrites.clear();
 		reads.clear();
 		reads.reserve(8);
 		ranges.reserve(assignments.size());
+		std::uint32_t stageMark{nextStageMark(engine)};
 
 		std::size_t stageBegin{};
 		for (std::size_t i{}; i < assignments.size(); ++i) {
@@ -1664,10 +1880,10 @@ struct Compiler {
 			collectAssignmentReads(engine, assignment, reads);
 
 			const FloatArray *write{&assignment.out_->variable.array()};
-			bool newStage{containsArray(currentWrites, write)};
+			bool newStage{writeMarks[write->arrayId()] == stageMark};
 
 			for (const FloatArray *read : reads) {
-				if (containsArray(currentWrites, read)) {
+				if (writeMarks[read->arrayId()] == stageMark) {
 					newStage = true;
 					break;
 				}
@@ -1675,11 +1891,11 @@ struct Compiler {
 
 			if (newStage && stageBegin < i) {
 				ranges.push_back(internal::AssignmentRange{stageBegin, i});
-				currentWrites.clear();
+				stageMark = nextStageMark(engine);
 				stageBegin = i;
 			}
 
-			appendUniqueArray(currentWrites, write);
+			writeMarks[write->arrayId()] = stageMark;
 		}
 
 		if (stageBegin < assignments.size()) {
@@ -1689,16 +1905,33 @@ struct Compiler {
 		return ranges;
 	}
 
-	static PlanCacheKey
-	validateAssignmentsAndBuildCacheKey(Engine &engine,
-	                                    const std::vector<Assignment> &assignments)
+	static PlanCacheKey buildFastPlanCacheKey(
+	    const Engine &engine, const std::vector<Assignment> &assignments) noexcept
 	{
 		PlanCacheKey key{};
 		key.assignmentCount = assignments.size();
 		key.hash = combineHash(0x706c616e, assignments.size(), 0);
 
+		for (const Assignment &assignment : assignments) {
+			assert(assignment.out_ != nullptr);
+			assert(assignment.expr_.nodeId() < engine.impl_->nodes.size());
+
+			const FloatArray &output{assignment.out_->variable.array()};
+			const ExprNode &root{engine.impl_->nodes[assignment.expr_.nodeId()]};
+			key.hash = combineHash(key.hash, output.arrayId(), root.key);
+			key.hash = combineHash(key.hash, assignmentKindCode(assignment.kind), 0);
+		}
+
+		return key;
+	}
+
+	static void validateAssignmentsAndCollectBindings(
+	    Engine &engine, const std::vector<Assignment> &assignments)
+	{
+		std::vector<internal::ArrayBinding> &bindings{engine.impl_->bindingScratch};
+		bindings.clear();
 		if (assignments.empty()) {
-			return key;
+			return;
 		}
 
 		if (assignments.front().out_ == nullptr) {
@@ -1725,10 +1958,7 @@ struct Compiler {
 			                 "代入先配列の要素数が一致しません。");
 
 			const FloatArray &output{assignment.out_->variable.array()};
-			const ExprNode &root{engine.impl_->nodes[assignment.expr_.nodeId()]};
-			appendCacheArray(key.hash, output);
-			key.hash =
-			    combineHash(key.hash, root.key, assignmentKindCode(assignment.kind));
+			appendArrayBinding(bindings, output);
 
 			reads.clear();
 			collectAssignmentReads(engine, assignment, reads);
@@ -1736,11 +1966,9 @@ struct Compiler {
 			for (const FloatArray *read : reads) {
 				requireSameShape(expected, *read,
 				                 "式に含まれる配列の要素数が一致しません。");
-				appendCacheArray(key.hash, *read);
+				appendArrayBinding(bindings, *read);
 			}
 		}
-
-		return key;
 	}
 
 	static CompileContext &makeCompileContext(Engine &engine)
@@ -1758,7 +1986,7 @@ struct Compiler {
 		context.groups.reserve(nodes.size());
 		if (keys.empty()) {
 			for (std::size_t nodeId{}; nodeId < nodes.size(); ++nodeId) {
-				std::size_t groupId{INVALID_NODE};
+				internal::NodeId groupId{INVALID_NODE};
 				for (std::size_t i{}; i < context.groups.size(); ++i) {
 					if (sameNode(nodes[context.groups[i].node], nodes[nodeId])) {
 						groupId = i;
@@ -1769,9 +1997,9 @@ struct Compiler {
 				if (groupId == INVALID_NODE) {
 					CompileGroup group{};
 					group.key = nodes[nodeId].key;
-					group.node = nodeId;
+					group.node = checkedNodeId(nodeId);
 					context.groups.push_back(group);
-					groupId = context.groups.size() - 1;
+					groupId = checkedNodeId(context.groups.size() - 1);
 				}
 
 				context.groupByNode[nodeId] = groupId;
@@ -1789,7 +2017,7 @@ struct Compiler {
 				context.groups.push_back(group);
 			}
 
-			context.groupByNode[entry.node] = context.groups.size() - 1;
+			context.groupByNode[entry.node] = checkedNodeId(context.groups.size() - 1);
 		}
 
 		return context;
@@ -1811,7 +2039,7 @@ struct Compiler {
 	                              const CompileContext &context) noexcept
 	{
 		const ExprNode &n{engine.impl_->nodes[nodeId]};
-		const std::size_t group{context.groupByNode[nodeId]};
+		const internal::NodeId group{context.groupByNode[nodeId]};
 
 		if (n.kind == NodeKind::Variable) {
 			ValueRef value{};
@@ -1824,7 +2052,7 @@ struct Compiler {
 
 		ValueRef value{};
 		value.kind = ValueKind::Scalar;
-		value.scalar = set1Block(n.scalar);
+		value.scalar = n.scalar;
 		value.group = group;
 		value.hasGroup = true;
 		return value;
@@ -1872,7 +2100,7 @@ struct Compiler {
 		return false;
 	}
 
-	static ValueRef makeRegValue(int reg, std::size_t group) noexcept
+	static ValueRef makeRegValue(int reg, internal::NodeId group) noexcept
 	{
 		ValueRef value{};
 		value.kind = ValueKind::Reg;
@@ -1904,7 +2132,7 @@ struct Compiler {
 	                            CompileContext &context)
 	{
 		const ExprNode &n{engine.impl_->nodes[nodeId]};
-		const std::size_t groupId{context.groupByNode[nodeId]};
+		const internal::NodeId groupId{context.groupByNode[nodeId]};
 
 		if (n.kind == NodeKind::Variable || n.kind == NodeKind::Scalar) {
 			return makeLeafValue(engine, nodeId, context);
@@ -2020,17 +2248,19 @@ struct Compiler {
 	}
 
 	template <typename Op>
-	static void appendOp(FusionPlan &plan, std::vector<Op> &bucket,
-	                     internal::OpExecutor execute, const Op &op)
+	static void appendOp(FusionPlan &plan, internal::InstructionBuffer<Op> &bucket,
+	                     internal::SingleOpExecutor execute, const Op &op)
 	{
 		const std::size_t index{bucket.size()};
 		bucket.push_back(op);
-		plan.data_.ops.push_back(internal::OpRef{execute, index});
+		plan.data_.ops.push_back(internal::OpRef{tiledExecutorFor(execute), index});
 		plan.data_.directOnly = false;
 	}
 
 	template <typename Op>
-	static void appendDirectStore(FusionPlan &plan, std::vector<Op> &bucket, const Op &op)
+	static void appendDirectStore(FusionPlan &plan,
+	                              internal::InstructionBuffer<Op> &bucket,
+	                              const Op &op)
 	{
 		bucket.push_back(op);
 		++plan.data_.directInstructionCount;
@@ -2431,7 +2661,7 @@ struct Compiler {
 			         internal::StoreA{out, value.array});
 		} else {
 			appendOp(plan, plan.data_.storeS, executeStoreS,
-			         internal::StoreS{out, value.scalar});
+			         internal::StoreS{out, set1Block(value.scalar)});
 		}
 
 		releaseIfLastUse(plan, value, context);
@@ -2648,19 +2878,19 @@ struct Compiler {
 			         internal::AddAA{dst, a.array, b.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.addRS, executeAddRS,
-			         internal::AddRS{dst, a.reg, b.scalar});
+			         internal::AddRS{dst, a.reg, set1Block(b.scalar)});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.addAS, executeAddAS,
-			         internal::AddAS{dst, a.array, b.scalar});
+			         internal::AddAS{dst, a.array, set1Block(b.scalar)});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Reg)
 			appendOp(plan, plan.data_.addRS, executeAddRS,
-			         internal::AddRS{dst, b.reg, a.scalar});
+			         internal::AddRS{dst, b.reg, set1Block(a.scalar)});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array)
 			appendOp(plan, plan.data_.addAS, executeAddAS,
-			         internal::AddAS{dst, b.array, a.scalar});
+			         internal::AddAS{dst, b.array, set1Block(a.scalar)});
 		else
 			appendOp(plan, plan.data_.setS, executeSetS,
-			         internal::SetS{dst, addBlock(a.scalar, b.scalar)});
+			         internal::SetS{dst, set1Block(a.scalar + b.scalar)});
 	}
 
 	static void emitSub(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
@@ -2679,19 +2909,19 @@ struct Compiler {
 			         internal::SubAA{dst, a.array, b.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.subRS, executeSubRS,
-			         internal::SubRS{dst, a.reg, b.scalar});
+			         internal::SubRS{dst, a.reg, set1Block(b.scalar)});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.subAS, executeSubAS,
-			         internal::SubAS{dst, a.array, b.scalar});
+			         internal::SubAS{dst, a.array, set1Block(b.scalar)});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Reg)
 			appendOp(plan, plan.data_.subSR, executeSubSR,
-			         internal::SubSR{dst, a.scalar, b.reg});
+			         internal::SubSR{dst, set1Block(a.scalar), b.reg});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array)
 			appendOp(plan, plan.data_.subSA, executeSubSA,
-			         internal::SubSA{dst, a.scalar, b.array});
+			         internal::SubSA{dst, set1Block(a.scalar), b.array});
 		else
 			appendOp(plan, plan.data_.setS, executeSetS,
-			         internal::SetS{dst, subBlock(a.scalar, b.scalar)});
+			         internal::SetS{dst, set1Block(a.scalar - b.scalar)});
 	}
 
 	static void emitMul(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
@@ -2710,19 +2940,19 @@ struct Compiler {
 			         internal::MulAA{dst, a.array, b.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.mulRS, executeMulRS,
-			         internal::MulRS{dst, a.reg, b.scalar});
+			         internal::MulRS{dst, a.reg, set1Block(b.scalar)});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.mulAS, executeMulAS,
-			         internal::MulAS{dst, a.array, b.scalar});
+			         internal::MulAS{dst, a.array, set1Block(b.scalar)});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Reg)
 			appendOp(plan, plan.data_.mulRS, executeMulRS,
-			         internal::MulRS{dst, b.reg, a.scalar});
+			         internal::MulRS{dst, b.reg, set1Block(a.scalar)});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array)
 			appendOp(plan, plan.data_.mulAS, executeMulAS,
-			         internal::MulAS{dst, b.array, a.scalar});
+			         internal::MulAS{dst, b.array, set1Block(a.scalar)});
 		else
 			appendOp(plan, plan.data_.setS, executeSetS,
-			         internal::SetS{dst, mulBlock(a.scalar, b.scalar)});
+			         internal::SetS{dst, set1Block(a.scalar * b.scalar)});
 	}
 
 	static void emitDiv(FusionPlan &plan, int dst, const ValueRef &a, const ValueRef &b)
@@ -2741,19 +2971,19 @@ struct Compiler {
 			         internal::DivAA{dst, a.array, b.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.divRS, executeDivRS,
-			         internal::DivRS{dst, a.reg, b.scalar});
+			         internal::DivRS{dst, a.reg, set1Block(b.scalar)});
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.divAS, executeDivAS,
-			         internal::DivAS{dst, a.array, b.scalar});
+			         internal::DivAS{dst, a.array, set1Block(b.scalar)});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Reg)
 			appendOp(plan, plan.data_.divSR, executeDivSR,
-			         internal::DivSR{dst, a.scalar, b.reg});
+			         internal::DivSR{dst, set1Block(a.scalar), b.reg});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array)
 			appendOp(plan, plan.data_.divSA, executeDivSA,
-			         internal::DivSA{dst, a.scalar, b.array});
+			         internal::DivSA{dst, set1Block(a.scalar), b.array});
 		else
 			appendOp(plan, plan.data_.setS, executeSetS,
-			         internal::SetS{dst, divBlock(a.scalar, b.scalar)});
+			         internal::SetS{dst, set1Block(a.scalar / b.scalar)});
 	}
 
 	static void emitFmaOrFallback(FusionPlan &plan, int dst, const ValueRef &a,
@@ -2778,19 +3008,19 @@ struct Compiler {
 		else if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar &&
 		         c.kind == ValueKind::Array)
 			appendOp(plan, plan.data_.fmaASA, executeFmaASA,
-			         internal::FmaASA{dst, a.array, b.scalar, c.array});
+			         internal::FmaASA{dst, a.array, set1Block(b.scalar), c.array});
 		else if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array &&
 		         c.kind == ValueKind::Array)
 			appendOp(plan, plan.data_.fmaASA, executeFmaASA,
-			         internal::FmaASA{dst, b.array, a.scalar, c.array});
+			         internal::FmaASA{dst, b.array, set1Block(a.scalar), c.array});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array &&
 		         c.kind == ValueKind::Scalar)
 			appendOp(plan, plan.data_.fmaRAS, executeFmaRAS,
-			         internal::FmaRAS{dst, a.reg, b.array, c.scalar});
+			         internal::FmaRAS{dst, a.reg, b.array, set1Block(c.scalar)});
 		else if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar &&
 		         c.kind == ValueKind::Array)
 			appendOp(plan, plan.data_.fmaRSA, executeFmaRSA,
-			         internal::FmaRSA{dst, a.reg, b.scalar, c.array});
+			         internal::FmaRSA{dst, a.reg, set1Block(b.scalar), c.array});
 		else {
 			const int temp{plan.allocateRegister()};
 			emitMul(plan, temp, a, b);
@@ -2836,28 +3066,28 @@ struct Compiler {
 		if (a.kind == ValueKind::Array && b.kind == ValueKind::Scalar &&
 		    c.kind == ValueKind::Array) {
 			appendOp(plan, plan.data_.storeFmaASA, executeStoreFmaASA,
-			         internal::StoreFmaASA{out, a.array, b.scalar, c.array});
+			         internal::StoreFmaASA{out, a.array, set1Block(b.scalar), c.array});
 			return true;
 		}
 
 		if (a.kind == ValueKind::Scalar && b.kind == ValueKind::Array &&
 		    c.kind == ValueKind::Array) {
 			appendOp(plan, plan.data_.storeFmaASA, executeStoreFmaASA,
-			         internal::StoreFmaASA{out, b.array, a.scalar, c.array});
+			         internal::StoreFmaASA{out, b.array, set1Block(a.scalar), c.array});
 			return true;
 		}
 
 		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Array &&
 		    c.kind == ValueKind::Scalar) {
 			appendOp(plan, plan.data_.storeFmaRAS, executeStoreFmaRAS,
-			         internal::StoreFmaRAS{out, a.reg, b.array, c.scalar});
+			         internal::StoreFmaRAS{out, a.reg, b.array, set1Block(c.scalar)});
 			return true;
 		}
 
 		if (a.kind == ValueKind::Reg && b.kind == ValueKind::Scalar &&
 		    c.kind == ValueKind::Array) {
 			appendOp(plan, plan.data_.storeFmaRSA, executeStoreFmaRSA,
-			         internal::StoreFmaRSA{out, a.reg, b.scalar, c.array});
+			         internal::StoreFmaRSA{out, a.reg, set1Block(b.scalar), c.array});
 			return true;
 		}
 
@@ -3299,7 +3529,9 @@ struct Compiler {
 		data.nextRegister = {};
 		data.maxRegisterCount = {};
 		data.directOnly = true;
+		data.directExecutor = nullptr;
 		data.freeRegisters.clear();
+		data.directGroups.clear();
 
 		data.addRR.clear();
 		data.addRA.clear();
@@ -3369,6 +3601,13 @@ struct Compiler {
 		data.storeNestedFmas.clear();
 		data.storeCompoundFmas.clear();
 		data.ops.clear();
+	}
+
+	template <typename T>
+	static void releaseUnusedLargeVector(internal::InstructionBuffer<T> &values) noexcept
+	{
+		constexpr std::size_t maxUnusedCapacity{16};
+		values.releaseIfUnused(maxUnusedCapacity);
 	}
 
 	template <typename T>
@@ -3452,6 +3691,7 @@ struct Compiler {
 		releaseUnusedLargeVector(data.storeNestedFmas);
 		releaseUnusedLargeVector(data.storeCompoundFmas);
 		releaseUnusedLargeVector(data.ops);
+		releaseUnusedLargeVector(data.directGroups);
 	}
 
 	static void compileFusionInto(Engine &engine, const std::vector<Assignment> &assignments,
@@ -3530,6 +3770,7 @@ struct Compiler {
 				throw std::logic_error{"直接実行用の式として判定された代入を生成できません。"};
 			}
 
+			selectDirectExecutor(plan.data_);
 			compactUnusedPlanStorage(plan);
 			return;
 		}
@@ -3629,16 +3870,19 @@ struct Compiler {
 	static const ScheduledPlan &
 	compileOrReuseScheduled(Engine &engine, const std::vector<Assignment> &assignments)
 	{
-		const PlanCacheKey key{validateAssignmentsAndBuildCacheKey(engine, assignments)};
+		const PlanCacheKey key{buildFastPlanCacheKey(engine, assignments)};
 
 		if (engine.impl_->hasCachedPlan &&
-		    samePlanCacheKey(key, engine.impl_->cachedPlanKey)) {
+		    samePlanCacheKey(key, engine.impl_->cachedPlanKey) &&
+		    bindingsAreCurrent(engine.impl_->cachedPlanBindings)) {
 			return engine.impl_->cachedPlan;
 		}
 
 		engine.impl_->hasCachedPlan = false;
+		validateAssignmentsAndCollectBindings(engine, assignments);
 		compileScheduledInto(engine, assignments, engine.impl_->cachedPlan);
 		engine.impl_->cachedPlanKey = key;
+		engine.impl_->cachedPlanBindings = engine.impl_->bindingScratch;
 		engine.impl_->hasCachedPlan = true;
 		return engine.impl_->cachedPlan;
 	}
@@ -3669,8 +3913,7 @@ Expression Engine::makeVariable(const Array &value)
 	ExprNode node{};
 	node.kind = NodeKind::Variable;
 	node.array = &variable.array();
-	node.key =
-	    internal::Compiler::combineHash(1, reinterpret_cast<std::uintptr_t>(node.array), 0);
+	node.key = internal::Compiler::combineHash(1, node.array->arrayId(), 0);
 	return internal::Compiler::appendNode(*this, node);
 }
 
