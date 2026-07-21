@@ -7,24 +7,33 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
 namespace rice::simd::internal
 {
 inline constexpr int MAX_REGISTERS{32};
-inline constexpr std::size_t INVALID_NODE{std::numeric_limits<std::size_t>::max()};
+// 間接呼び出し1回で処理するブロック数。大きくし過ぎると作業領域がL1キャッシュを圧迫します。
+inline constexpr std::size_t EXECUTION_BLOCK_TILE{4};
+
+using NodeId = std::uint32_t;
+inline constexpr NodeId INVALID_NODE{std::numeric_limits<NodeId>::max()};
 
 class FloatArray
 {
 public:
 	explicit FloatArray(std::size_t elementCount = {});
 
-	FloatArray &operator=(const FloatArray &) = default;
+	FloatArray(const FloatArray &) = delete;
+	FloatArray &operator=(const FloatArray &) = delete;
 
 	void resize(std::size_t elementCount);
 	std::size_t elementCount() const noexcept;
 	std::size_t blockCount() const noexcept;
+	std::uint32_t arrayId() const noexcept;
+	std::uint64_t storageGeneration() const noexcept;
+	void setArrayId(std::uint32_t arrayId) noexcept;
 	SimdBlock &block(std::size_t index) noexcept;
 	const SimdBlock &block(std::size_t index) const noexcept;
 	SimdBlock *data() noexcept;
@@ -41,9 +50,12 @@ public:
 
 private:
 	void copyFrom(const float *values, std::size_t count);
+	void advanceStorageGeneration() noexcept;
 
 	std::size_t elementCount_{};
 	std::vector<SimdBlock> blocks_;
+	std::uint32_t arrayId_{};
+	std::uint64_t storageGeneration_{1};
 };
 
 class Variable
@@ -76,27 +88,35 @@ struct Assignment {
 	AssignmentKind kind{AssignmentKind::Assign};
 };
 
-enum class NodeKind { Variable, Scalar, Add, Sub, Mul, Div };
+enum class NodeKind : std::uint8_t { Variable, Scalar, Add, Sub, Mul, Div };
 
 struct ExprNode {
-	NodeKind kind{NodeKind::Scalar};
-	const FloatArray *array{};
-	float scalar{};
-	std::size_t lhs{INVALID_NODE};
-	std::size_t rhs{INVALID_NODE};
 	std::uint64_t key{};
+	union {
+		const FloatArray *array;
+		float scalar;
+	};
+	NodeId lhs{INVALID_NODE};
+	NodeId rhs{INVALID_NODE};
+	NodeKind kind{NodeKind::Scalar};
+
+	ExprNode() noexcept : array{} {}
 };
 
-enum class ValueKind { Reg, Array, Scalar };
+static_assert(sizeof(ExprNode) <= 32);
+
+enum class ValueKind : std::uint8_t { Reg, Array, Scalar };
 
 struct ValueRef {
-	ValueKind kind{ValueKind::Scalar};
-	int reg{-1};
 	const SimdBlock *array{};
-	SimdBlock scalar{zeroBlock()};
-	std::size_t group{INVALID_NODE};
+	float scalar{};
+	NodeId group{INVALID_NODE};
+	int reg{-1};
+	ValueKind kind{ValueKind::Scalar};
 	bool hasGroup{};
 };
+
+static_assert(sizeof(ValueRef) <= 24);
 
 struct AddRR {
 	int dst;
@@ -405,7 +425,7 @@ struct StoreNestedFma {
 	const SimdBlock *add{};
 };
 
-enum class StoreCompoundKind { Add, Sub, Mul, Div };
+enum class StoreCompoundKind : std::uint8_t { Add, Sub, Mul, Div };
 
 struct StoreCompoundFma {
 	SimdBlock *out{};
@@ -417,12 +437,104 @@ struct StoreCompoundFma {
 
 struct FusionPlanData;
 
-using OpExecutor = void (*)(const FusionPlanData &plan, std::size_t blockIndex, SimdBlock *regs,
+template <typename T>
+class InstructionBuffer
+{
+public:
+	using Storage = std::vector<T>;
+	using const_iterator = typename Storage::const_iterator;
+
+	void reserve(std::size_t count)
+	{
+		if (count != 0) {
+			ensureStorage().reserve(count);
+		}
+	}
+
+	void clear() noexcept
+	{
+		if (storage_ != nullptr) {
+			storage_->clear();
+		}
+	}
+
+	void push_back(const T &value) { ensureStorage().push_back(value); }
+
+	std::size_t size() const noexcept
+	{
+		if (storage_ == nullptr) {
+			return 0;
+		}
+
+		return storage_->size();
+	}
+
+	std::size_t capacity() const noexcept
+	{
+		if (storage_ == nullptr) {
+			return 0;
+		}
+
+		return storage_->capacity();
+	}
+
+	bool empty() const noexcept { return size() == 0; }
+
+	T &operator[](std::size_t index) noexcept { return (*storage_)[index]; }
+	const T &operator[](std::size_t index) const noexcept { return (*storage_)[index]; }
+
+	const_iterator begin() const noexcept { return storage().begin(); }
+	const_iterator end() const noexcept { return storage().end(); }
+
+	void releaseIfUnused(std::size_t maxUnusedCapacity) noexcept
+	{
+		if (storage_ != nullptr && storage_->empty() &&
+		    storage_->capacity() > maxUnusedCapacity) {
+			storage_.reset();
+		}
+	}
+
+private:
+	// 使用する命令種類だけvectorを生成し、空の命令種類が持つ固定費を抑えます。
+	Storage &ensureStorage()
+	{
+		if (storage_ == nullptr) {
+			storage_ = std::make_unique<Storage>();
+		}
+
+		return *storage_;
+	}
+
+	const Storage &storage() const noexcept
+	{
+		if (storage_ == nullptr) {
+			static const Storage emptyStorage{};
+			return emptyStorage;
+		}
+
+		return *storage_;
+	}
+
+	std::unique_ptr<Storage> storage_;
+};
+
+using SingleOpExecutor = void (*)(const FusionPlanData &plan, std::size_t blockIndex,
+                                  SimdBlock *regs, std::size_t index) noexcept;
+using OpExecutor = void (*)(const FusionPlanData &plan, std::size_t firstBlock,
+                            std::size_t blockCount, SimdBlock *regs,
                             std::size_t index) noexcept;
+using DirectBlockExecutor = void (*)(const FusionPlanData &plan,
+                                     std::size_t blockIndex) noexcept;
+using DirectPlanExecutor = void (*)(const FusionPlanData &plan) noexcept;
 
 struct OpRef {
 	OpExecutor execute{};
 	std::size_t index{};
+};
+
+struct DirectGroupRef {
+	DirectBlockExecutor executeBlock{};
+	DirectPlanExecutor executePlan{};
 };
 
 struct FusionPlanData {
@@ -433,75 +545,77 @@ struct FusionPlanData {
 	bool directOnly{true};
 	std::vector<int> freeRegisters;
 
-	std::vector<AddRR> addRR;
-	std::vector<AddRA> addRA;
-	std::vector<AddAR> addAR;
-	std::vector<AddAA> addAA;
-	std::vector<AddRS> addRS;
-	std::vector<AddAS> addAS;
+	InstructionBuffer<AddRR> addRR;
+	InstructionBuffer<AddRA> addRA;
+	InstructionBuffer<AddAR> addAR;
+	InstructionBuffer<AddAA> addAA;
+	InstructionBuffer<AddRS> addRS;
+	InstructionBuffer<AddAS> addAS;
 
-	std::vector<SubRR> subRR;
-	std::vector<SubRA> subRA;
-	std::vector<SubAR> subAR;
-	std::vector<SubAA> subAA;
-	std::vector<SubRS> subRS;
-	std::vector<SubAS> subAS;
-	std::vector<SubSR> subSR;
-	std::vector<SubSA> subSA;
+	InstructionBuffer<SubRR> subRR;
+	InstructionBuffer<SubRA> subRA;
+	InstructionBuffer<SubAR> subAR;
+	InstructionBuffer<SubAA> subAA;
+	InstructionBuffer<SubRS> subRS;
+	InstructionBuffer<SubAS> subAS;
+	InstructionBuffer<SubSR> subSR;
+	InstructionBuffer<SubSA> subSA;
 
-	std::vector<MulRR> mulRR;
-	std::vector<MulRA> mulRA;
-	std::vector<MulAR> mulAR;
-	std::vector<MulAA> mulAA;
-	std::vector<MulRS> mulRS;
-	std::vector<MulAS> mulAS;
+	InstructionBuffer<MulRR> mulRR;
+	InstructionBuffer<MulRA> mulRA;
+	InstructionBuffer<MulAR> mulAR;
+	InstructionBuffer<MulAA> mulAA;
+	InstructionBuffer<MulRS> mulRS;
+	InstructionBuffer<MulAS> mulAS;
 
-	std::vector<DivRR> divRR;
-	std::vector<DivRA> divRA;
-	std::vector<DivAR> divAR;
-	std::vector<DivAA> divAA;
-	std::vector<DivRS> divRS;
-	std::vector<DivAS> divAS;
-	std::vector<DivSR> divSR;
-	std::vector<DivSA> divSA;
+	InstructionBuffer<DivRR> divRR;
+	InstructionBuffer<DivRA> divRA;
+	InstructionBuffer<DivAR> divAR;
+	InstructionBuffer<DivAA> divAA;
+	InstructionBuffer<DivRS> divRS;
+	InstructionBuffer<DivAS> divAS;
+	InstructionBuffer<DivSR> divSR;
+	InstructionBuffer<DivSA> divSA;
 
-	std::vector<FmaRRR> fmaRRR;
-	std::vector<FmaRRA> fmaRRA;
-	std::vector<FmaRAA> fmaRAA;
-	std::vector<FmaAAA> fmaAAA;
-	std::vector<FmaASA> fmaASA;
-	std::vector<FmaRAS> fmaRAS;
-	std::vector<FmaRSA> fmaRSA;
+	InstructionBuffer<FmaRRR> fmaRRR;
+	InstructionBuffer<FmaRRA> fmaRRA;
+	InstructionBuffer<FmaRAA> fmaRAA;
+	InstructionBuffer<FmaAAA> fmaAAA;
+	InstructionBuffer<FmaASA> fmaASA;
+	InstructionBuffer<FmaRAS> fmaRAS;
+	InstructionBuffer<FmaRSA> fmaRSA;
 
-	std::vector<StoreFmaAAA> storeFmaAAA;
-	std::vector<StoreFmaASA> storeFmaASA;
-	std::vector<StoreFmaRRR> storeFmaRRR;
-	std::vector<StoreFmaRRA> storeFmaRRA;
-	std::vector<StoreFmaRAA> storeFmaRAA;
-	std::vector<StoreFmaRAS> storeFmaRAS;
-	std::vector<StoreFmaRSA> storeFmaRSA;
-	std::vector<StoreNegFmaAAA> storeNegFmaAAA;
-	std::vector<StoreNegFmaASA> storeNegFmaASA;
-	std::vector<StoreBinaryAA> storeAddAA;
-	std::vector<StoreBinaryAS> storeAddAS;
-	std::vector<StoreBinaryAA> storeSubAA;
-	std::vector<StoreBinaryAS> storeSubAS;
-	std::vector<StoreBinarySA> storeSubSA;
-	std::vector<StoreBinaryAA> storeMulAA;
-	std::vector<StoreBinaryAS> storeMulAS;
-	std::vector<StoreBinaryAA> storeDivAA;
-	std::vector<StoreBinaryAS> storeDivAS;
-	std::vector<StoreBinarySA> storeDivSA;
+	InstructionBuffer<StoreFmaAAA> storeFmaAAA;
+	InstructionBuffer<StoreFmaASA> storeFmaASA;
+	InstructionBuffer<StoreFmaRRR> storeFmaRRR;
+	InstructionBuffer<StoreFmaRRA> storeFmaRRA;
+	InstructionBuffer<StoreFmaRAA> storeFmaRAA;
+	InstructionBuffer<StoreFmaRAS> storeFmaRAS;
+	InstructionBuffer<StoreFmaRSA> storeFmaRSA;
+	InstructionBuffer<StoreNegFmaAAA> storeNegFmaAAA;
+	InstructionBuffer<StoreNegFmaASA> storeNegFmaASA;
+	InstructionBuffer<StoreBinaryAA> storeAddAA;
+	InstructionBuffer<StoreBinaryAS> storeAddAS;
+	InstructionBuffer<StoreBinaryAA> storeSubAA;
+	InstructionBuffer<StoreBinaryAS> storeSubAS;
+	InstructionBuffer<StoreBinarySA> storeSubSA;
+	InstructionBuffer<StoreBinaryAA> storeMulAA;
+	InstructionBuffer<StoreBinaryAS> storeMulAS;
+	InstructionBuffer<StoreBinaryAA> storeDivAA;
+	InstructionBuffer<StoreBinaryAS> storeDivAS;
+	InstructionBuffer<StoreBinarySA> storeDivSA;
 
-	std::vector<SetS> setS;
-	std::vector<StoreR> storeR;
-	std::vector<StoreA> storeA;
-	std::vector<StoreS> storeS;
-	std::vector<StoreFmaFmaAddProduct> storeFmaFmaAddProducts;
-	std::vector<StoreFmaPlusFma> storeFmaPlusFmas;
-	std::vector<StoreNestedFma> storeNestedFmas;
-	std::vector<StoreCompoundFma> storeCompoundFmas;
+	InstructionBuffer<SetS> setS;
+	InstructionBuffer<StoreR> storeR;
+	InstructionBuffer<StoreA> storeA;
+	InstructionBuffer<StoreS> storeS;
+	InstructionBuffer<StoreFmaFmaAddProduct> storeFmaFmaAddProducts;
+	InstructionBuffer<StoreFmaPlusFma> storeFmaPlusFmas;
+	InstructionBuffer<StoreNestedFma> storeNestedFmas;
+	InstructionBuffer<StoreCompoundFma> storeCompoundFmas;
 	std::vector<OpRef> ops;
+	std::vector<DirectGroupRef> directGroups;
+	DirectPlanExecutor directExecutor{};
 };
 
 class FusionPlan
@@ -523,7 +637,8 @@ private:
 	friend class ScheduledPlan;
 	friend struct Compiler;
 
-	void executeBlock(std::size_t blockIndex, SimdBlock *regs) const noexcept;
+	void executeBlocks(std::size_t firstBlock, std::size_t blockCount,
+	                   SimdBlock *regs) const noexcept;
 	int allocateRegister() noexcept;
 	void releaseRegister(int reg);
 
@@ -563,16 +678,21 @@ struct PlanCacheKey {
 	std::size_t assignmentCount{};
 };
 
+struct ArrayBinding {
+	const FloatArray *array{};
+	std::uint64_t storageGeneration{};
+};
+
 struct KeyIndex {
 	std::uint64_t key{};
-	std::size_t node{};
+	NodeId node{};
 };
 
 struct CompileGroup {
 	std::uint64_t key{};
-	std::size_t node{INVALID_NODE};
-	int useCount{};
 	ValueRef cachedValue{};
+	NodeId node{INVALID_NODE};
+	int useCount{};
 	bool hasCachedValue{};
 };
 
@@ -581,7 +701,7 @@ struct AssignmentRange {
 	std::size_t end{};
 };
 
-enum class PendingStoreKind {
+enum class PendingStoreKind : std::uint8_t {
 	Value,
 	FmaAAA,
 	FmaASA,
@@ -610,7 +730,7 @@ struct PendingStore {
 };
 
 struct CompileContext {
-	std::vector<std::size_t> groupByNode;
+	std::vector<NodeId> groupByNode;
 	std::vector<CompileGroup> groups;
 };
 
@@ -622,11 +742,15 @@ struct EngineData {
 
 	ScheduledPlan cachedPlan;
 	PlanCacheKey cachedPlanKey;
+	std::vector<ArrayBinding> cachedPlanBindings;
+	std::vector<ArrayBinding> bindingScratch;
 	bool hasCachedPlan{};
+	std::uint32_t nextArrayId{1};
+	std::uint32_t stageMarkGeneration{1};
 
 	std::vector<AssignmentRange> stageRanges;
 	std::vector<const FloatArray *> readScratch;
-	std::vector<const FloatArray *> writeScratch;
+	std::vector<std::uint32_t> stageWriteMarks;
 	std::vector<KeyIndex> nodeKeyIndex;
 	std::vector<PendingStore> storeScratch;
 	CompileContext compileContext;
